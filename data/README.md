@@ -36,19 +36,35 @@ chest_xray/
     `-- PNEUMONIA/
 ```
 
-Some archive versions contain an additional nested `chest_xray` directory. `XRAY_DATA_ROOT` must point to the innermost directory that directly contains `train`, `val`, and `test`.
+Some archive versions contain duplicate nested `chest_xray` directories and macOS metadata. The download script selects the shallowest complete non-`__MACOSX` copy. `XRAY_DATA_ROOT` is written to the directory that directly contains `train`, `val`, and `test`.
 
-## Local or server configuration
+## Required local download
 
-Each working copy must copy `.env.example` as `.env` and set:
+Every team member downloads the exact same public Kaggle Version 2 into their own working copy:
+
+```bash
+python scripts/download_data.py
+```
+
+Authentication is normally unnecessary. Use `--login` only if Kaggle explicitly reports an authorization error. The default destination is `data/raw/kaggle/`, which is ignored by Git. The command validates the official class counts and automatically sets `XRAY_DATA_ROOT` in the local `.env` file. To register an existing download instead:
+
+```bash
+python scripts/download_data.py --data-root "/absolute/path/to/chest_xray"
+```
+
+Each working copy therefore has its own ignored `.env`:
 
 ```env
 XRAY_DATA_ROOT=/absolute/path/to/chest_xray
-XRAY_OUTPUT_ROOT=/absolute/path/to/team5_outputs
+XRAY_OUTPUT_ROOT=outputs
 XRAY_NUM_WORKERS=4
 ```
 
-The `.env` file must never be committed.
+The `.env`, Kaggle API token, `kaggle.json`, downloaded archive, and raw images must never be committed.
+
+## Ownership boundary
+
+The leader-owned download command acquires the pinned Kaggle release, validates its expected 5,856-image folder inventory, and configures the local path. Member 1 separately owns integrity auditing, duplicate detection, patient/group-aware splitting, manifest generation, data loading, and their tests. Those implementations and results must be submitted from Member 1's branch for review. Team members must not create personal alternative splits after the reviewed split is frozen.
 
 ## Split policy
 

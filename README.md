@@ -85,6 +85,7 @@ Reported image-level metrics:
 |   |-- baseline.yaml
 |   `-- densenet121.yaml
 |-- data/
+|   |-- raw/                    # local only, ignored by Git
 |   |-- manifests/
 |   `-- README.md
 |-- docs/
@@ -95,8 +96,9 @@ Reported image-level metrics:
 |-- presentation/
 |-- report/
 |-- scripts/
+|   `-- download_data.py        # leader-owned local acquisition
 |-- src/
-|   |-- data/
+|   |-- data/                   # download now; Member 1 modules via PR
 |   `-- models/
 |-- tests/
 |-- .env.example
@@ -115,9 +117,33 @@ git clone https://github.com/Medical-Xray-AI/pneumonia-xray.git
 cd pneumonia-xray
 ```
 
-### 2. Configure local paths
+### 2. Install the project dependencies
 
-Copy the environment template:
+```bash
+python -m pip install -r requirements.txt
+```
+
+### 3. Download the dataset locally
+
+Every team member must download the pinned Kaggle Version 2 on their own computer. The dataset is public, so start without authentication:
+
+```bash
+python scripts/download_data.py
+```
+
+If Kaggle explicitly returns an authorization error, retry once with `python scripts/download_data.py --login`. The login validation is deferred to the actual download request. Later runs reuse an already valid local copy without downloading or overwriting it.
+
+The command downloads into the Git-ignored `data/raw/kaggle/` directory, validates all expected class counts, finds the actual `chest_xray` root, and writes that path to the local `.env`. It never writes Kaggle credentials to the repository.
+
+If the dataset was already downloaded elsewhere:
+
+```bash
+python scripts/download_data.py --data-root "/absolute/path/to/chest_xray"
+```
+
+### 4. Optional manual path configuration
+
+The download command updates `.env` automatically. To configure it manually, copy the template:
 
 ```bash
 # Windows CMD
@@ -127,7 +153,7 @@ copy .env.example .env
 cp .env.example .env
 ```
 
-Edit `.env` and point it to the extracted `chest_xray` directory and a machine-local or shared output directory:
+Edit `.env` and point it to the extracted `chest_xray` directory and a machine-local output directory:
 
 ```env
 XRAY_DATA_ROOT=/path/to/chest_xray
@@ -137,11 +163,11 @@ XRAY_NUM_WORKERS=4
 
 The real `.env` file must remain local and must never be committed.
 
-### 3. Check the GPU environment
+### 5. Check the GPU environment
 
 Before installing or upgrading PyTorch on the shared GPU server, follow [`docs/GPU_GUIDE.md`](docs/GPU_GUIDE.md). Dependency versions remain provisional until the server's Python, CUDA, PyTorch, and torchvision versions have been audited.
 
-### 4. Verify the repository entry point
+### 6. Verify the repository entry point
 
 ```bash
 python run_all.py --check
@@ -151,7 +177,7 @@ The complete training and inference commands will be connected to `run_all.py` a
 
 ## Dataset
 
-Download the archive outside this Git repository and extract it so that `XRAY_DATA_ROOT` points to:
+The approved dataset is pinned as `paultimothymooney/chest-xray-pneumonia/versions/2`. Download it with `python scripts/download_data.py`; do not manually copy it into Git. The local `XRAY_DATA_ROOT` will point to:
 
 ```text
 chest_xray/
@@ -173,6 +199,8 @@ Official and distribution resources:
 - [Kermany et al., Cell (2018)](https://doi.org/10.1016/j.cell.2018.02.010)
 
 See [`data/README.md`](data/README.md) for the data policy and [`data/manifests/README.md`](data/manifests/README.md) for the manifest contract.
+
+Member 1 will contribute the audit, split, manifest, and data-loading implementation through a separate reviewed pull request. Until that PR is merged, the repository only guarantees reproducible acquisition and exact inventory validation of the approved Kaggle release.
 
 ## Reproducibility
 
@@ -200,6 +228,7 @@ Development is branch- and pull-request-based. Direct development on `main` is a
 
 - [x] Repository structure and security rules
 - [x] Shared data and experiment configurations
+- [x] Reproducible local Kaggle download and inventory validation entry point
 - [x] Team workflow and GPU guidance
 - [ ] Dataset audit and leakage-safe manifests
 - [ ] Custom CNN baseline

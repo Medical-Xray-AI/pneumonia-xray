@@ -1,1 +1,1 @@
-"""Data manifests, preprocessing, and leakage-aware group splitting."""
+"""Shared data package; Member 1 will add audit, split, and loading modules."""

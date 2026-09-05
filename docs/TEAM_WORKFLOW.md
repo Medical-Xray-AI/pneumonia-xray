@@ -10,7 +10,7 @@ The shared data contract is `configs/data.yaml`. Changes to labels, split policy
 
 ### Member 1: data and audit
 
-- Download and verify the approved Kaggle archive.
+- Verify the leader-provided Kaggle download and implement the reviewed audit/preparation pipeline.
 - Inventory the provided train, validation, and test folders.
 - Audit class balance, corrupt files, patient identifiers, exact hashes, and near-duplicates.
 - Create deterministic patient/group-level manifests.
@@ -73,6 +73,7 @@ At least one approval is required before merge.
 - Repository reflects the pediatric pneumonia task.
 - Credentials and raw data are ignored.
 - Dataset location is environment-based.
+- Every member has run `python scripts/download_data.py` on their own computer.
 - Roles and PR rules are understood.
 
 ### Gate 2: split freeze
@@ -84,6 +85,8 @@ At least one approval is required before merge.
 - Seed 42 and `split_v1` are recorded.
 
 No member may create a personal alternative split after this gate.
+
+Member 1 contributes the audit/split implementation and creates the audited team split once. Other members download the pinned raw dataset locally and use the reviewed `split_v1` manifests; they do not generate personal splits.
 
 ### Gate 3: smoke tests
 
