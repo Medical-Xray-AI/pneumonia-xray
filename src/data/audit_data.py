@@ -160,7 +160,7 @@ def _write_markdown_summary(summary: dict[str, Any], class_counts: pd.DataFrame,
     lines = [
         "# Data audit summary",
         "",
-        f"- Dataset root used at runtime: `{summary['dataset_root']}` (not stored in manifests)",
+        "- Dataset root: supplied at runtime through `XRAY_DATA_ROOT` (not stored in reports)",
         f"- Images scanned: **{summary['image_count']}**",
         f"- Corrupt or unreadable images: **{summary['corrupt_count']}**",
         f"- Images with a parsed patient identifier: **{summary['patient_id_coverage']}**",
@@ -274,7 +274,7 @@ def audit_dataset(
     class_counts.to_csv(output / "class_distribution.csv", index=False)
 
     summary: dict[str, Any] = {
-        "dataset_root": str(root),
+        "dataset_root": "<XRAY_DATA_ROOT>",
         "image_count": int(len(frame)),
         "corrupt_count": int(frame["is_corrupted"].sum()),
         "patient_id_coverage": int((frame["patient_id"] != "").sum()),
@@ -301,7 +301,7 @@ def audit_dataset(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", default=None, help="Defaults to XRAY_DATA_ROOT")
-    parser.add_argument("--output-dir", default="audit_out")
+    parser.add_argument("--output-dir", default="docs/data_audit")
     parser.add_argument("--near-threshold", type=int, default=4)
     return parser
 
@@ -314,3 +314,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
