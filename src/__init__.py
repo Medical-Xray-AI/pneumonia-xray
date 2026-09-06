@@ -1,1 +1,1 @@
-"""Pediatric chest X-ray pneumonia classification package."""
+"""Project source package."""
