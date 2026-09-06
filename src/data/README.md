@@ -1,20 +1,37 @@
-# Data module boundary
+# Data module contract
 
-The leader-owned infrastructure currently provides:
+## Modules
 
-- `download.py` - version-pinned Kaggle download;
-- exact source-folder and class-count validation;
-- canonical dataset-root discovery;
-- safe local `.env` configuration without committing credentials or images.
+- `audit_data.py`: inventory, integrity, identity parsing, exact hashes, perceptual hashes, duplicate groups, and leakage reports.
+- `split_data.py`: locked-test decision and deterministic group-level manifests.
+- `dataset.py`: safe relative-path resolution plus PyTorch Dataset/DataLoader helpers.
+- `visualize_data.py`: class counts, deterministic sample grid, and original image dimensions.
+- `common.py`: schema, path, hashing, identity, and deterministic helper functions.
 
-Member 1 will add the reviewed implementations for:
+## Canonical sample
 
-- integrity and duplicate auditing;
-- patient/group-aware splitting;
-- portable manifests;
-- PyTorch Dataset/DataLoader helpers;
-- audit visualizations and data sanity tests.
+Each `ChestXrayDataset` item contains:
 
-Those modules must arrive through Member 1's feature branch and pull request.
-The shared contract remains documented in `configs/data.yaml` and
-`data/manifests/README.md`.
+```text
+image
+label
+patient_id
+group_id
+image_path
+source_split
+pneumonia_subtype
+```
+
+`image` is a three-channel tensor unless a supplied transform returns another tensor representation. `label` is a scalar `torch.float32` value for the configured one-logit `BCEWithLogitsLoss`: 0 for normal and 1 for pneumonia.
+
+## Leakage grouping
+
+A group joins images sharing at least one of the following:
+
+1. a conservatively parsed patient ID;
+2. an exact SHA-256 hash;
+3. both pHash and dHash distance at or below the selected threshold.
+
+All members of a connected group receive one deterministic `group_id`. A split is rejected if group, known patient, or exact hash values cross its boundaries.
+
+Unparseable patient filenames keep an empty `patient_id`; this limitation must remain visible and must not be described as fully patient-level coverage.
