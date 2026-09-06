@@ -247,7 +247,7 @@ def create_manifests(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--audit-manifest", default="audit_out/file_manifest.csv")
+    parser.add_argument("--audit-manifest", default="docs/data_audit/file_manifest.csv")
     parser.add_argument("--output-dir", default="data/manifests")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--validation-fraction", type=float, default=0.15)
@@ -271,3 +271,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
