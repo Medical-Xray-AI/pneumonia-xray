@@ -109,7 +109,7 @@ def create_figures(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", default="data/manifests/split_manifest.csv")
-    parser.add_argument("--output-dir", default="audit_out/figures")
+    parser.add_argument("--output-dir", default="docs/data_audit/figures")
     parser.add_argument("--data-root", default=None, help="Defaults to XRAY_DATA_ROOT")
     parser.add_argument("--seed", type=int, default=42)
     return parser
