@@ -12,6 +12,16 @@ from typing import Iterable
 import numpy as np
 from PIL import Image
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # Explicit --data-root remains available in minimal setups.
+    load_dotenv = None
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+if load_dotenv is not None:
+    load_dotenv(REPOSITORY_ROOT / ".env", override=False)
+
 
 IMAGE_EXTENSIONS = {".jpeg", ".jpg", ".png"}
 SOURCE_SPLITS = {
@@ -197,3 +207,4 @@ class UnionFind:
         self.parent[root_right] = root_left
         if self.rank[root_left] == self.rank[root_right]:
             self.rank[root_left] += 1
+
