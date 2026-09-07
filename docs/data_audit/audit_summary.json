@@ -1,0 +1,15 @@
+{
+  "corrupt_count": 0,
+  "cross_source_near_duplicate_pairs": 5,
+  "dataset_root": "<XRAY_DATA_ROOT>",
+  "exact_duplicate_groups": 30,
+  "identity_policy": "subtype-aware pneumonia IDs; namespace-aware normal IDs",
+  "image_count": 5856,
+  "near_duplicate_pairs": 44,
+  "near_duplicate_threshold": 4,
+  "patient_id_coverage": 5856,
+  "patient_overlap_ids": 0,
+  "provided_test_safe": false,
+  "test_overlap_groups": 5,
+  "unique_patient_ids": 4097
+}
