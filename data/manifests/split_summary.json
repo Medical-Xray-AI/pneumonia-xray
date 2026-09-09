@@ -1,0 +1,23 @@
+{
+  "checks": {
+    "group_overlap": 0,
+    "patient_overlap": 0,
+    "sha256_overlap": 0
+  },
+  "rebuild_ratios": {
+    "test": 0.15,
+    "train": 0.7,
+    "validation": 0.15
+  },
+  "row_count": 5856,
+  "seed": 42,
+  "split_counts": {
+    "test": 877,
+    "train": 4102,
+    "validation": 877
+  },
+  "strategy": "rebuild_all_groups",
+  "unsafe_provided_test_groups": 5,
+  "validation_fraction_of_development": 0.15,
+  "version": "split_v1"
+}
