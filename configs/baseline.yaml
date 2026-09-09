@@ -34,6 +34,15 @@ augmentation:
   rotation_degrees: 5
   translation_fraction: 0.03
   brightness_contrast_probability: 0.2
+  brightness: 0.15
+  contrast: 0.15
+
+overfit:
+  subset_size: 32
+  epochs: 200
+  learning_rate: 0.003
+  weight_decay: 0.0
+  dropout: 0.0
 
 normalization:
   type: dataset_statistics
