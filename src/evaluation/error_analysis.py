@@ -40,10 +40,8 @@ CONFIDENCE_BINS = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
 def infer_subtype(image_path: str, label: int) -> str:
     """Recover the pneumonia subtype from the filename.
 
-    The current split manifest does not carry a `pneumonia_subtype` column even
-    though `configs/data.yaml` sets `preserve_pneumonia_subtype: true`, so it is
-    derived here instead of blocking on a manifest regeneration. Subtype is
-    audit metadata for subgroup error analysis only - it is never a training
+    Used only when subtype metadata is unavailable. The canonical manifest
+    already records subtype; it is audit metadata, never a training
     target and never enters model selection.
     """
     if int(label) == LABEL_NORMAL:
@@ -60,37 +58,22 @@ def attach_manifest_metadata(
     *,
     manifest_path_column: str = "image_path",
 ) -> pd.DataFrame:
-    """Join predictions to the split manifest, tolerating both path schemas.
-
-    Member 1's generated manifest currently uses an absolute `path` column,
-    while `data/manifests/README.md` specifies a relative `image_path`. Both
-    are accepted and matched on basename, so this keeps working after the
-    manifest is relativised to `XRAY_DATA_ROOT`.
-    """
+    """Join canonical relative image paths without ambiguous basename matches."""
     frame = predictions.copy()
-    frame["basename"] = frame["image_path"].map(lambda p: Path(str(p)).name)
-
-    if manifest is not None and not manifest.empty:
-        source = manifest.copy()
-        path_column = (
-            manifest_path_column
-            if manifest_path_column in source.columns
-            else ("path" if "path" in source.columns else None)
-        )
-        if path_column is None:
-            raise ValueError(
-                "manifest must contain an 'image_path' or 'path' column; "
-                f"found {list(source.columns)}"
-            )
-        source["basename"] = source[path_column].map(lambda p: Path(str(p)).name)
-
-        carry = [
-            column
-            for column in ("pneumonia_subtype", "source_split", "split", "group_id", "width", "height")
-            if column in source.columns
-        ]
-        source = source[["basename", *carry]].drop_duplicates("basename")
-        frame = frame.merge(source, on="basename", how="left", suffixes=("", "_manifest"))
+    if manifest is not None:
+        if manifest_path_column not in manifest:
+            raise ValueError("manifest requires image_path")
+        source = manifest.rename(columns={manifest_path_column: "image_path"})
+        if source.image_path.duplicated().any() or source.image_path.isna().any():
+            raise ValueError("manifest contains duplicate or empty image_path")
+        if not set(frame.image_path).issubset(set(source.image_path)):
+            raise ValueError("predictions contain image_path absent from manifest")
+        carry = [column for column in
+                 ("pneumonia_subtype", "source_split", "split", "group_id", "width", "height")
+                 if column in source]
+        # The audited manifest is authoritative for subgroup metadata.
+        frame = frame.drop(columns=[c for c in carry if c in frame]).merge(
+            source[["image_path", *carry]], on="image_path", how="left", validate="one_to_one")
 
     if "pneumonia_subtype" not in frame.columns or frame["pneumonia_subtype"].isna().all():
         frame["pneumonia_subtype"] = [
@@ -105,7 +88,7 @@ def attach_manifest_metadata(
             )
         )
 
-    return frame.drop(columns=["basename"])
+    return frame
 
 
 def classify_outcomes(frame: pd.DataFrame, threshold: float) -> pd.DataFrame:

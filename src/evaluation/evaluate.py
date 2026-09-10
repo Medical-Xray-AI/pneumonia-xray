@@ -15,15 +15,14 @@ least these three columns:
     probability   predicted pneumonia probability in [0, 1], i.e. the model
                   logit AFTER sigmoid - not the raw logit, and not a hard 0/1
 
-Any further columns (run_id, model, split, logit, ...) are preserved and
-ignored. Keeping the required set this small is deliberate: subtype, patient
-id and source split are recovered by joining to the manifest in
-`error_analysis.py`, so the trainers do not have to thread them through.
+The evaluation CLI additionally requires model and run_id identity columns.
+The split manifest is mandatory for validation selection and test scoring;
+image paths and labels must match it exactly, regardless of row order.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import numpy as np
@@ -167,9 +166,67 @@ def evaluate_predictions(
     return metrics
 
 
+def validate_manifest_predictions(frame: pd.DataFrame, manifest: pd.DataFrame, split: str) -> None:
+    """Require the complete canonical split, matching labels by relative path."""
+    for name, table in [("predictions", frame), ("manifest", manifest)]:
+        required = {"image_path", "label"} | ({"split"} if name == "manifest" else set())
+        if table is None or table.empty or not required.issubset(table.columns):
+            raise PredictionSchemaError(f"{name}: nonempty canonical manifest/schema required")
+        paths = table["image_path"]
+        if paths.isna().any() or paths.duplicated().any():
+            raise PredictionSchemaError(f"{name}: empty or duplicate image_path")
+        for value in paths:
+            if not isinstance(value, str) or not value.strip() or "\\" in value or ":" in value:
+                raise PredictionSchemaError(f"{name}: image_path must be a canonical relative path")
+            path = PurePosixPath(value)
+            if path.is_absolute() or ".." in path.parts or str(path) != value:
+                raise PredictionSchemaError(f"{name}: image_path must be a canonical relative path")
+        if not pd.api.types.is_numeric_dtype(table["label"]) or not table["label"].isin([0, 1]).all():
+            raise PredictionSchemaError(f"{name}: numeric binary label required")
+        if "split" in table and (table["split"].isna().any() or set(table["split"]) != {split}):
+            raise PredictionSchemaError(f"{name}: expected only {split} split")
+    expected, actual = set(manifest.image_path), set(frame.image_path)
+    if actual != expected:
+        raise PredictionSchemaError(f"image set mismatch: {len(expected - actual)} missing, {len(actual - expected)} extra")
+    labels = manifest.set_index("image_path")["label"].reindex(frame.image_path).to_numpy()
+    if not np.array_equal(labels, frame.label.to_numpy()):
+        raise PredictionSchemaError("prediction label does not match manifest label")
+
+
+def prediction_run_id(frame: pd.DataFrame, model: str, run_id: str = "") -> str:
+    """Check a single model/run identity and preserve the export's run ID."""
+    for column in ("model", "run_id"):
+        if column not in frame or frame[column].isna().any() or frame[column].nunique() != 1:
+            raise PredictionSchemaError(f"predictions require one nonempty {column}")
+        if not str(frame[column].iloc[0]).strip():
+            raise PredictionSchemaError(f"predictions require nonempty {column}")
+    if frame.model.iloc[0] != model:
+        raise PredictionSchemaError("prediction model does not match requested model")
+    actual = str(frame.run_id.iloc[0])
+    if run_id and actual != run_id:
+        raise PredictionSchemaError("prediction run_id does not match requested run")
+    return actual
+
+
+def validate_frozen_selection(frozen: Mapping[str, Any], model: str, run_id: str) -> float:
+    """Bind test scoring to the validation-selected model and training run."""
+    if frozen.get("selected_on") != "validation":
+        raise PredictionSchemaError("frozen selection must have selected_on=validation")
+    if frozen.get("recommended_model") != model or frozen.get("run_id") != run_id or not run_id:
+        raise PredictionSchemaError("frozen model/run does not match test predictions")
+    try:
+        threshold = float(frozen["threshold"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PredictionSchemaError("frozen threshold is missing or invalid") from exc
+    if not np.isfinite(threshold) or not 0 <= threshold <= 1:
+        raise PredictionSchemaError("frozen threshold must be finite and in [0, 1]")
+    return threshold
+
+
 def evaluate_validation(
     frame: pd.DataFrame,
     *,
+    manifest: pd.DataFrame,
     model: str = "unknown",
     run_id: str = "",
     objective: str = DEFAULT_OBJECTIVE,
@@ -180,6 +237,8 @@ def evaluate_validation(
     threshold. Its output threshold is what gets frozen and handed to Uzv 5
     for the single locked-test evaluation.
     """
+    validate_manifest_predictions(frame, manifest, "validation")
+    run_id = prediction_run_id(frame, model, run_id)
     selection = select_threshold(
         frame["label"].to_numpy(), frame["probability"].to_numpy(), objective=objective
     )

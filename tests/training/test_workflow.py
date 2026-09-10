@@ -1,4 +1,5 @@
 import csv
+import json
 import sys
 
 import pandas as pd
@@ -29,6 +30,17 @@ def test_training_exports_canonical_validation(training_config, monkeypatch, nam
     assert set(frame.model) == {name}
     assert set(frame.run_id) == {name}
     assert (output / name / "checkpoints/best.pt").is_file()
+    from scripts.evaluate_model import build_parser, run_validation
+    report = output / name / "evaluation"
+    args = build_parser().parse_args([
+        "validation", "--predictions", f"{name}={output / name / 'predictions_val.csv'}",
+        "--manifest", cfg["data"]["manifests"]["validation"], "--out-dir", str(report)])
+    assert run_validation(args) == 0
+    frozen = json.loads((report / "tables/frozen_threshold.json").read_text())
+    assert frozen["recommended_model"] == name and frozen["run_id"] == name
+    assert frozen["selected_on"] == "validation"
+    assert (report / "figures/roc_validation.png").is_file()
+
 
 
 def test_interrupted_resume_matches_uninterrupted(training_config, monkeypatch):

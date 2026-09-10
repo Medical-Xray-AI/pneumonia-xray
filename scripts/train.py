@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Reproducible binary-classifier training CLI.
 
-This command trains on ``train`` and selects the best epoch on ``val`` only.
+This command trains on ``train`` and selects the best epoch on ``validation`` only.
 It never reads the locked ``test`` split. After training, it reloads the best
-checkpoint and exports ``predictions_val.csv`` for Member 4's threshold search.
+checkpoint and exports ``predictions_val.csv`` for validation threshold selection.
 """
 
 from __future__ import annotations

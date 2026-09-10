@@ -238,3 +238,27 @@ def test_save_gradcam_figure_writes_a_file(tmp_path, model, image):
 def test_save_gradcam_figure_rejects_mismatched_lengths(tmp_path):
     with pytest.raises(ValueError, match="equal length"):
         save_gradcam_figure([np.zeros((8, 8))], [], ["a"], tmp_path / "x.png")
+
+
+@pytest.mark.parametrize("name,strategy", [("small_cnn", "head_only"),
+                                           ("densenet121", "head_only"),
+                                           ("densenet121", "last_block")])
+def test_real_models_gradcam_preserves_frozen_weights(name, strategy):
+    from src.models import create_model
+    model = create_model({"model": {"name": name, "pretrained": False,
+                                    "freeze_strategy": strategy}}).eval()
+    weights = {key: value.clone() for key, value in model.state_dict().items()}
+    flags = {key: value.requires_grad for key, value in model.named_parameters()}
+    layer = resolve_target_layer(model)
+    if name == "densenet121": assert layer is model.backbone.features
+    with torch.no_grad(), GradCAM(model, layer) as cam:
+        heatmap = cam(torch.randn(1, 3, 64, 64), target="pneumonia")
+        assert cam._gradients is not None
+        assert torch.isfinite(cam._gradients).all()
+    assert heatmap.shape == (64, 64) and np.isfinite(heatmap).all()
+    assert 0 <= heatmap.min() <= heatmap.max() <= 1
+    for key, value in model.state_dict().items():
+        assert torch.equal(value, weights[key]), key
+    for key, value in model.named_parameters():
+        assert value.requires_grad == flags[key]
+        if not flags[key]: assert value.grad is None

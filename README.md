@@ -55,15 +55,14 @@ flowchart LR
 
 The Kaggle archive contains `train`, `val`, and `test` folders, but the provided validation directory contains only 16 images. It is therefore not used as the project's model-selection validation set.
 
-Before training, the data owner must audit patient identifiers, exact hashes, and potential near-duplicates across all provided folders.
+The completed audit found overlap in the provided split, so the committed
+`split_v1` pools all source folders into **4,102 train / 877 validation / 877
+test images**. Patient filename keys, exact hashes and recorded near-duplicate
+groups are kept within one split. Use `data/manifests/{train,validation,test}.csv`
+as the authority; the source folder in a relative image path is not its final
+split. Do not regenerate the split for training.
 
-Preferred protocol:
-
-1. Combine the provided `train` and `val` folders for development.
-2. Create a new patient/group-level internal validation split using seed 42.
-3. Keep the provided `test` folder locked only if the audit confirms no patient or duplicate overlap with development data.
-4. If overlap is found, pool all images and rebuild train/validation/test at patient or duplicate-group level using the ratios in `configs/data.yaml`.
-5. Select the model, early-stopping point, and decision threshold using validation data only.
+Model selection, early stopping and threshold selection use validation only.
 
 Reported image-level metrics:
 
@@ -96,10 +95,15 @@ Reported image-level metrics:
 |-- presentation/
 |-- report/
 |-- scripts/
-|   `-- download_data.py        # leader-owned local acquisition
+|   |-- download_data.py
+|   |-- train.py                # shared baseline / DenseNet training
+|   `-- evaluate_model.py       # manifest-checked evaluation
 |-- src/
-|   |-- data/                   # download now; Member 1 modules via PR
-|   `-- models/
+|   |-- data/
+|   |-- preprocessing/
+|   |-- models/
+|   |-- training/
+|   `-- evaluation/
 |-- tests/
 |-- .env.example
 |-- .gitignore
@@ -173,7 +177,22 @@ Before installing or upgrading PyTorch on the shared GPU server, follow [`docs/G
 python run_all.py --check
 ```
 
-The complete training and inference commands will be connected to `run_all.py` as reviewed modules are integrated.
+`run_all.py` is still a config-existence check. Train and evaluate using the
+working commands below (set the environment variables in your shell first):
+
+```bash
+python scripts/train.py --config configs/baseline.yaml --run-id baseline_run
+python scripts/train.py --config configs/densenet121.yaml --run-id densenet_run
+python scripts/evaluate_model.py validation \
+    --predictions small_cnn=$XRAY_OUTPUT_ROOT/baseline_run/predictions_val.csv \
+    --predictions densenet121=$XRAY_OUTPUT_ROOT/densenet_run/predictions_val.csv \
+    --manifest data/manifests/validation.csv --out-dir report
+```
+
+See [training and resume usage](docs/training_protocol.md) for PowerShell,
+output paths and reproducible resume. See [evaluation protocol](docs/evaluation_protocol.md)
+for the frozen-model contract. Full dataset results are produced by actual
+training runs; synthetic checks are not project performance results.
 
 ## Dataset
 
@@ -200,7 +219,8 @@ Official and distribution resources:
 
 See [`data/README.md`](data/README.md) for the data policy and [`data/manifests/README.md`](data/manifests/README.md) for the manifest contract.
 
-Member 1 will contribute the audit, split, manifest, and data-loading implementation through a separate reviewed pull request. Until that PR is merged, the repository only guarantees reproducible acquisition and exact inventory validation of the approved Kaggle release.
+The canonical audit, manifests and shared dataset API are integrated.
+Run `python scripts/verify_manifests.py` to verify the split metadata.
 
 ## Reproducibility
 
@@ -230,10 +250,10 @@ Development is branch- and pull-request-based. Direct development on `main` is a
 - [x] Shared data and experiment configurations
 - [x] Reproducible local Kaggle download and inventory validation entry point
 - [x] Team workflow and GPU guidance
-- [ ] Dataset audit and leakage-safe manifests
-- [ ] Custom CNN baseline
-- [ ] DenseNet121 training pipeline
-- [ ] Image-level evaluation and interpretation
+- [x] Dataset audit and leakage-safe manifests
+- [x] Custom CNN baseline
+- [x] DenseNet121 training pipeline
+- [x] Image-level evaluation and interpretation
 - [ ] End-to-end inference and clean-clone verification
 - [ ] Final report and presentation
 

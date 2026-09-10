@@ -109,7 +109,9 @@ def test_empty_file_is_rejected(tmp_path):
 
 def test_evaluate_validation_selects_and_records_its_threshold():
     frame = _valid_frame()
-    metrics, selection = evaluate_validation(frame, model="baseline", run_id="r1")
+    frame["model"], frame["run_id"] = "baseline", "r1"
+    manifest = frame[["image_path", "label"]].assign(split="validation")
+    metrics, selection = evaluate_validation(frame, manifest=manifest, model="baseline", run_id="r1")
 
     assert metrics["split"] == "validation"
     assert metrics["threshold"] == pytest.approx(selection.threshold)

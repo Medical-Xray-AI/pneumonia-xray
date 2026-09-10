@@ -8,8 +8,7 @@ Two modes, deliberately asymmetric:
               analysis. Produces `frozen_threshold.json` - the hand-off to
               Uzv 5.
 
-  test        Refuses to select anything. Requires an explicit --threshold
-              (normally `--threshold-file frozen_threshold.json`) and scores
+  test        Refuses to select anything. Requires `--threshold-file frozen_threshold.json` and scores
               the locked test set once at that fixed operating point.
 
 The asymmetry is the point: it is not possible to tune a threshold on the
@@ -20,7 +19,7 @@ EXAMPLES
 --------
   # after Uzv 2 and Uzv 3 hand over validation predictions
   python scripts/evaluate_model.py validation \
-      --predictions baseline=$XRAY_OUTPUT_ROOT/run_baseline/predictions_val.csv \
+      --predictions small_cnn=$XRAY_OUTPUT_ROOT/run_baseline/predictions_val.csv \
       --predictions densenet121=$XRAY_OUTPUT_ROOT/run_densenet/predictions_val.csv \
       --manifest data/manifests/validation.csv \
       --out-dir report
@@ -28,6 +27,7 @@ EXAMPLES
   # once, at the very end, after the team freezes the model and threshold
   python scripts/evaluate_model.py test \
       --predictions densenet121=$XRAY_OUTPUT_ROOT/run_densenet/predictions_test.csv \
+      --manifest data/manifests/test.csv \
       --threshold-file report/tables/frozen_threshold.json \
       --out-dir report
 """
@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -51,6 +53,9 @@ from src.evaluation.evaluate import (
     evaluate_predictions,
     evaluate_validation,
     load_predictions,
+    prediction_run_id,
+    validate_manifest_predictions,
+    validate_frozen_selection,
     recommend_model,
     write_comparison_table,
 )
@@ -66,18 +71,15 @@ def parse_predictions_argument(value: str) -> Tuple[str, Path]:
         )
     model, _, path = value.partition("=")
     model = model.strip()
-    if not model:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", model):
         raise argparse.ArgumentTypeError(f"empty model name in '{value}'")
     return model, Path(path.strip())
 
 
-def load_manifest(path: Optional[Path]) -> Optional[pd.DataFrame]:
-    """Load the split manifest used to enrich the error analysis, if given."""
-    if path is None:
-        return None
-    if not path.is_file():
-        print(f"[warn] manifest not found, continuing without it: {path}", file=sys.stderr)
-        return None
+def load_manifest(path: Path) -> pd.DataFrame:
+    """Read the mandatory canonical split manifest."""
+    if path is None or not path.is_file():
+        raise ValueError(f"split manifest not found: {path}")
     return pd.read_csv(path)
 
 
@@ -85,9 +87,9 @@ def run_validation(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir)
     figures_dir = out_dir / "figures"
     tables_dir = out_dir / "tables"
-    tables_dir.mkdir(parents=True, exist_ok=True)
-
     manifest = load_manifest(args.manifest)
+    if len({model for model, _ in args.predictions}) != len(args.predictions):
+        raise ValueError("Use distinct model names when comparing predictions")
 
     results: List[Dict] = []
     curves: Dict[str, Tuple] = {}
@@ -98,7 +100,7 @@ def run_validation(args: argparse.Namespace) -> int:
         frame = load_predictions(path)
         frames[model] = frame
         metrics, selection = evaluate_validation(
-            frame, model=model, run_id=args.run_id, objective=args.objective
+            frame, manifest=manifest, model=model, run_id=args.run_id, objective=args.objective
         )
         results.append(metrics)
         curves[model] = (frame["label"].to_numpy(), frame["probability"].to_numpy())
@@ -153,7 +155,8 @@ def run_validation(args: argparse.Namespace) -> int:
         "threshold": threshold,
         "objective": args.objective,
         "selected_on": "validation",
-        "run_id": args.run_id,
+        "run_id": best["run_id"],
+        "validation_manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
         "validation_macro_f1": best["macro_f1"],
         "validation_pneumonia_sensitivity": best["pneumonia_sensitivity"],
         "validation_specificity": best["specificity"],
@@ -179,21 +182,15 @@ def run_validation(args: argparse.Namespace) -> int:
 
 def run_test(args: argparse.Namespace) -> int:
     """Score the locked test set once, at a threshold chosen earlier."""
-    threshold = args.threshold
-    if threshold is None:
-        if args.threshold_file is None:
-            print(
-                "[error] test mode requires --threshold or --threshold-file.\n"
-                "        Thresholds are selected on validation only; this mode "
-                "will not search for one.",
-                file=sys.stderr,
-            )
-            return 2
-        frozen = json.loads(Path(args.threshold_file).read_text(encoding="utf-8"))
-        threshold = float(frozen["threshold"])
-        print(f"[info] using frozen threshold {threshold:.4f} "
-              f"(model: {frozen.get('recommended_model', 'unknown')}, "
-              f"selected on {frozen.get('selected_on', 'unknown')})")
+    if len(args.predictions) != 1:
+        raise ValueError("Test mode scores only the single frozen model/run")
+    frozen = json.loads(Path(args.threshold_file).read_text(encoding="utf-8"))
+    manifest = load_manifest(args.manifest)
+    model, path = args.predictions[0]
+    frame = load_predictions(path)
+    validate_manifest_predictions(frame, manifest, "test")
+    run_id = prediction_run_id(frame, model, args.run_id)
+    threshold = validate_frozen_selection(frozen, model, run_id)
 
     out_dir = Path(args.out_dir)
     figures_dir = out_dir / "figures"
@@ -205,7 +202,7 @@ def run_test(args: argparse.Namespace) -> int:
         frame = load_predictions(path)
         metrics = evaluate_predictions(
             frame, threshold=threshold, model=model, split="test",
-            run_id=args.run_id, threshold_source="frozen_from_validation",
+            run_id=run_id, threshold_source="frozen_from_validation",
         )
         results.append(metrics)
 
@@ -244,34 +241,35 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--out-dir", type=Path, default=Path("report"),
                                help="Root for figures/ and tables/ (default: report).")
         subparser.add_argument("--run-id", default="",
-                               help="Run identifier recorded in the output tables.")
+                               help="Optional assertion of the prediction CSV run identity.")
+        subparser.add_argument("--manifest", type=Path, required=True,
+                               help="Canonical manifest for the complete evaluated split.")
 
     validation_parser = subparsers.add_parser(
-        "validation", help="Select the threshold on validation data and report.")
+        "validation", allow_abbrev=False, help="Select the threshold on validation data and report.")
     add_common(validation_parser)
-    validation_parser.add_argument(
-        "--manifest", type=Path, default=None,
-        help="Split manifest CSV used to enrich the subgroup error analysis.")
     validation_parser.add_argument(
         "--objective", default=DEFAULT_OBJECTIVE,
         choices=["macro_f1", "pneumonia_sensitivity", "balanced_accuracy"],
         help="Quantity the threshold search maximises (default: macro_f1).")
 
     test_parser = subparsers.add_parser(
-        "test", help="Score the locked test set once at a frozen threshold.")
+        "test", allow_abbrev=False, help="Score the locked test set once at a frozen threshold.")
     add_common(test_parser)
-    test_parser.add_argument("--threshold", type=float, default=None,
-                             help="Frozen decision threshold; never searched here.")
-    test_parser.add_argument("--threshold-file", type=Path, default=None,
+    test_parser.add_argument("--threshold-file", type=Path, required=True,
                              help="frozen_threshold.json produced by validation mode.")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    if args.mode == "validation":
-        return run_validation(args)
-    return run_test(args)
+    try:
+        if args.mode == "validation":
+            return run_validation(args)
+        return run_test(args)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

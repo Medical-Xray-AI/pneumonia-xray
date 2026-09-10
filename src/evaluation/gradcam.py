@@ -52,6 +52,7 @@ import torch.nn.functional as F
 # maps before global pooling - the standard Grad-CAM target, and the deepest
 # point that still carries spatial structure.
 KNOWN_TARGET_LAYERS = {
+    "DenseNet121Binary": "backbone.features",
     "DenseNet": "features",        # torchvision DenseNet121 -> (B, 1024, 7, 7)
     "BaselineCNN": "features",     # src/models/baseline.py  -> (B, 256, 14, 14)
 }
@@ -155,6 +156,8 @@ class GradCAM:
         # Explicitly enable grad: callers routinely wrap evaluation in
         # torch.no_grad(), under which Grad-CAM silently cannot work.
         with torch.enable_grad():
+            # Input gradients keep a frozen backbone connected to autograd.
+            input_tensor = input_tensor.detach().clone().requires_grad_(True)
             logits = self.model(input_tensor)
             logit = logits.reshape(-1)[0]
 

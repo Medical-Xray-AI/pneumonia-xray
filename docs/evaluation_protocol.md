@@ -29,10 +29,18 @@ Each run exports one CSV per evaluated split (`predictions_val.csv`,
 | `image_path` | Path relative to `XRAY_DATA_ROOT`; joins to the split manifest |
 | `label` | Ground truth, `0` or `1` — numeric, not `NORMAL`/`PNEUMONIA` |
 | `probability` | Pneumonia probability in `[0, 1]`, **after** sigmoid |
+| `model` | Factory model name: `small_cnn` or `densenet121` |
+| `run_id` | Identity of the run that produced the checkpoint |
+| `split` | `validation` or `test`; required from the shared trainer |
 
-Extra columns are preserved and ignored. Patient id, subtype and source split
-are *not* required here — `error_analysis.py` recovers them by joining to the
-manifest, so the trainers do not have to thread them through.
+Both modes require a canonical `--manifest`. Every prediction must match its
+complete image set and numeric labels, joined by full relative `image_path`.
+Duplicate, missing and extra images are rejected. Manifest split values must
+match the mode; prediction split values are checked whenever present. Folder
+names in image paths describe the original archive, not the rebuilt split.
+Each CSV must identify exactly one model and run. Comparison uses one shared
+validation manifest; run IDs can differ between models and are preserved.
+Subtype and other audit metadata are read from the canonical manifest.
 
 `load_predictions` rejects, with a named error: missing columns, empty files,
 duplicated `image_path`, missing values, text labels, probabilities outside
@@ -79,29 +87,35 @@ covered by tests — the frozen threshold must not depend on DataLoader ordering
 The locked test set is evaluated **once**, after the team freezes the model and
 the threshold.
 
-This is enforced by the tool, not by discipline. `scripts/evaluate_model.py`
-has two asymmetric modes:
+`scripts/evaluate_model.py` has two asymmetric modes:
 
-- `validation` — searches for a threshold, writes the comparison table, all
-  figures, the error analysis, and `frozen_threshold.json`.
-- `test` — **refuses to run without an explicit `--threshold` or
-  `--threshold-file`** and exits with status 2. It cannot search.
+- `validation` searches for a threshold and records the selected model and run
+  in `frozen_threshold.json`, alongside the validation manifest SHA-256.
+- `test` requires `--threshold-file` and the test manifest. It checks
+  `selected_on=validation`, the model and run identity, and a finite threshold
+  in `[0, 1]`. Only the frozen model/run can be scored. A bare numeric
+  `--threshold` is not accepted.
 
-There is no code path through this CLI that tunes a threshold on test data.
+These checks prevent accidental split or run substitution; they do not
+cryptographically authenticate user-edited CSVs or enforce a one-time lock.
+The team remains responsible for performing the final test only once and
+recording that event. The shared training command exports validation only;
+test prediction/inference integration remains release work.
 
 ## Commands
 
 ```bash
 # 1. Validation: compare models, select and freeze the threshold
 python scripts/evaluate_model.py validation \
-    --predictions baseline=$XRAY_OUTPUT_ROOT/<run>/predictions_val.csv \
+    --predictions small_cnn=$XRAY_OUTPUT_ROOT/<run>/predictions_val.csv \
     --predictions densenet121=$XRAY_OUTPUT_ROOT/<run>/predictions_val.csv \
     --manifest data/manifests/validation.csv \
-    --out-dir report --run-id <run_id>
+    --out-dir report
 
 # 2. Locked test: exactly once, at the frozen threshold
 python scripts/evaluate_model.py test \
     --predictions densenet121=$XRAY_OUTPUT_ROOT/<run>/predictions_test.csv \
+    --manifest data/manifests/test.csv \
     --threshold-file report/tables/frozen_threshold.json \
     --out-dir report
 ```
@@ -123,7 +137,10 @@ python scripts/evaluate_model.py test \
 ## Grad-CAM
 
 `src/evaluation/gradcam.py` weights the last convolutional feature maps by the
-gradient of a target score. Two project-specific points:
+gradient of a target score. The actual DenseNet wrapper resolves to
+`backbone.features`. Both `head_only` and `last_block` are supported: input
+gradients enable attribution without unfreezing or updating backbone weights.
+Call `model.eval()` before using Grad-CAM. Two project-specific points:
 
 - **Single-logit sign convention.** Both models emit one pneumonia logit, not a
   two-class softmax, so explaining a NORMAL prediction requires
@@ -153,19 +170,18 @@ patient id, and no image. Subgroups smaller than `MIN_GROUP_SIZE = 10` are
 collapsed into an `other` bucket so no row can be traced to an individual.
 "Most confident false negative" is reported as a probability, never as a path.
 
-Pneumonia subtype (bacterial / viral) is recovered from the filename pattern
+Pneumonia subtype (bacterial / viral) is read from the manifest, with a fallback to the filename pattern
 `personNNN_{bacteria,virus}_MMM`. It is **audit metadata for subgroup error
 analysis only** — never a training target, never an input to model selection.
 This provides the per-group performance breakdown the Track 2 brief requires.
 
 ## Known limitations to state in the paper
 
-1. **Patient-level grouping covers the PNEUMONIA class only.** NORMAL filenames
-   in this dataset encode no patient id, so those images are grouped by exact
-   content hash — 1,583 NORMAL images fall into 1,579 groups. Roughly 27% of
-   the data therefore has duplicate-level, not patient-level, leakage
-   protection. Two different radiographs of the same healthy child can land in
-   different splits and we cannot detect it.
+1. **Patient identities are inferred from filenames.** The audit extracts
+   keys for both NORMAL and PNEUMONIA filenames and combines them with exact
+   hashes and reviewed near-duplicate links. These are grouping heuristics,
+   not independently verified clinical patient identifiers; undetected
+   identity overlap remains a limitation.
 2. **Grad-CAM is not clinical evidence.** It shows where the network's
    activations are, not where the pathology is, and must be presented as a
    qualitative sanity check only.
