@@ -130,7 +130,7 @@ class ManifestDataset(Dataset):
 
         label = int(row["label"])
 
-        return image, label
+        return {"image": image, "label": label, "image_path": str(row["image_path"])}
 
     def class_counts(self) -> dict:
         counts = self.df["label"].value_counts().to_dict()
@@ -167,6 +167,7 @@ def load_dataset(
         try:
             return _ExternalDataset(
                 manifest_path,
+                data_root=data_root,
                 transform=transform,
             )
         except TypeError:
@@ -774,8 +775,14 @@ def evaluate(
 
     all_probs = []
     all_labels = []
+    image_paths = []
 
     for batch in loader:
+
+        if collect_predictions:
+            if not isinstance(batch, dict) or "image_path" not in batch:
+                raise ValueError("Prediction export requires image_path metadata")
+            image_paths.extend(batch["image_path"])
 
         images, labels = unpack_batch(
             batch
@@ -934,6 +941,7 @@ def evaluate(
             metrics,
             probs,
             labels_np,
+            image_paths,
         )
 
     return metrics
@@ -1530,7 +1538,7 @@ def train(
         )
     )
 
-    final_metrics, probs, labels_np = evaluate(
+    final_metrics, probs, labels_np, image_paths = evaluate(
         model,
         val_loader,
         device,
@@ -1541,6 +1549,10 @@ def train(
 
     predictions_df = pd.DataFrame(
         {
+            "image_path": image_paths,
+            "run_id": run_dir.name,
+            "model": "small_cnn",
+            "split": "train" if mode == "overfit" else "validation",
             "probability": probs,
             "label": labels_np,
             "prediction": (
