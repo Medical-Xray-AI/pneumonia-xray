@@ -8,11 +8,11 @@ model:
   weights: IMAGENET1K_V1
   output_units: 1
   dropout: 0.2
-  freeze_strategy: last_block
+  freeze_strategy: head_only
 training:
   epochs: 15
   batch_size: 16
-  learning_rate: 0.0001
+  learning_rate: 0.0003
   weight_decay: 0.0001
   optimizer: adamw
   loss: weighted_bce_with_logits

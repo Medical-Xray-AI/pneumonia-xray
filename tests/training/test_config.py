@@ -1,52 +1,24 @@
 from pathlib import Path
-
 import pytest
+import yaml
+from src.training.config import load_config, save_resolved_config
 
-from src.training.config import load_config
+ROOT = Path(__file__).resolve().parents[2]
 
-
-BASE = """
-seed: 42
-split_version: split_v1
-data:
-  manifest: audit_out/split_manifest.csv
-  split_column: new_split
-  image_size: 224
-model:
-  name: densenet121
-  pretrained: false
-  dropout: 0.2
-  freeze_strategy: last_block
-training:
-  epochs: 2
-  batch_size: 2
-  amp: false
-  monitor: macro_f1
-  training_threshold: 0.5
-  optimizer: {name: adamw, lr: 0.001}
-  scheduler: {name: none}
-  loss: {name: bce_with_logits, pos_weight: auto}
-  early_stopping: {patience: 2}
-"""
-
-
-def test_load_valid_config(tmp_path: Path):
-    p = tmp_path / "cfg.yaml"
-    p.write_text(BASE)
-    cfg = load_config(p)
+@pytest.mark.parametrize("name", ["baseline", "densenet121", "densenet121_frozen", "densenet121_lr2e-4"])
+def test_committed_configs_and_resolved_roundtrip(name, tmp_path):
+    cfg = load_config(ROOT / "configs" / f"{name}.yaml")
     assert cfg["seed"] == 42
-    assert cfg["_meta"]["config_sha256"]
+    assert "train" in cfg["data"]["manifests"]
+    saved = tmp_path / "resolved.yaml"
+    save_resolved_config(cfg, saved)
+    assert load_config(saved)["_meta"]["config_sha256"] == cfg["_meta"]["config_sha256"]
 
-
-def test_rejects_nonproject_seed(tmp_path: Path):
-    p = tmp_path / "cfg.yaml"
-    p.write_text(BASE.replace("seed: 42", "seed: 7"))
-    with pytest.raises(ValueError, match="seed=42"):
-        load_config(p)
-
-
-def test_rejects_threshold_tuning_inside_trainer(tmp_path: Path):
-    p = tmp_path / "cfg.yaml"
-    p.write_text(BASE.replace("training_threshold: 0.5", "training_threshold: 0.7"))
-    with pytest.raises(ValueError, match="threshold"):
-        load_config(p)
+@pytest.mark.parametrize("field,value,match", [("seed", 7, "seed"), ("training_threshold", 0.7, "threshold")])
+def test_invalid_config(field, value, match, tmp_path):
+    cfg = load_config(ROOT / "configs/baseline.yaml")
+    if field == "seed": cfg[field] = value
+    else: cfg["training"][field] = value
+    p = tmp_path / "bad.yaml"
+    save_resolved_config(cfg, p)
+    with pytest.raises(ValueError, match=match): load_config(p)

@@ -69,7 +69,7 @@ def _unpack_batch(batch: Any) -> Tuple[torch.Tensor, torch.Tensor, Optional[Any]
     if isinstance(batch, Mapping):
         if "image" not in batch or "label" not in batch:
             raise KeyError("Dict batch must contain 'image' and 'label'.")
-        return batch["image"], batch["label"], batch.get("metadata")
+        return batch["image"], batch["label"], batch.get("metadata", {k: v for k, v in batch.items() if k not in {"image", "label"}})
     if isinstance(batch, (tuple, list)) and len(batch) >= 2:
         metadata = batch[2] if len(batch) >= 3 else None
         return batch[0], batch[1], metadata

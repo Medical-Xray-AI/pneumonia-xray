@@ -1,43 +1,26 @@
 from pathlib import Path
-
 import pandas as pd
-from PIL import Image
+import pytest
+from src.data.audit_data import audit_dataset
+from src.data.split_data import create_manifests
+from src.training.data import ManifestDataset, compute_pos_weight_from_train, validate_development_splits, build_transforms
+from src.training.config import load_config
 
-from src.training.data import ManifestDataset, compute_pos_weight_from_train
 
-
-def test_manifest_path_remaps_under_data_root(tmp_path: Path):
-    root = tmp_path / "chest_xray"
-    for label in ["NORMAL", "PNEUMONIA"]:
-        d = root / "train" / label
-        d.mkdir(parents=True, exist_ok=True)
-        Image.new("L", (40, 20), color=128).save(d / f"{label}.jpeg")
-
-    manifest = tmp_path / "split_manifest.csv"
-    pd.DataFrame(
-        [
-            {
-                "path": "/kaggle/input/old/train/NORMAL/NORMAL.jpeg",
-                "filename": "NORMAL.jpeg",
-                "split": "train",
-                "label": "NORMAL",
-                "group_id": "a",
-                "new_split": "train",
-            },
-            {
-                "path": "/kaggle/input/old/train/PNEUMONIA/PNEUMONIA.jpeg",
-                "filename": "PNEUMONIA.jpeg",
-                "split": "train",
-                "label": "PNEUMONIA",
-                "group_id": "b",
-                "new_split": "train",
-            },
-        ]
-    ).to_csv(manifest, index=False)
-
-    ds = ManifestDataset(manifest, "train", data_root=root)
-    image, label, metadata = ds[0]
-    assert image.size == (40, 20)
-    assert label == 0
-    assert metadata["image_path"] == "NORMAL.jpeg"
-    assert compute_pos_weight_from_train(ds) == 1.0
+def test_canonical_manifest_loader(dataset_root, tmp_path, monkeypatch):
+    monkeypatch.setenv("XRAY_DATA_ROOT", str(dataset_root))
+    audit_dataset(dataset_root, tmp_path / "audit", near_threshold=0)
+    create_manifests(tmp_path / "audit/file_manifest.csv", tmp_path / "manifests")
+    cfg = load_config(Path(__file__).resolve().parents[2] / "configs/baseline.yaml")
+    cfg["data"]["manifests"] = {s: str(tmp_path / "manifests" / f"{s}.csv") for s in ("train", "validation")}
+    train_t, eval_t, source = build_transforms(cfg)
+    assert source == "src.preprocessing.transforms"
+    train = ManifestDataset(cfg["data"]["manifests"]["train"], "train", transform=train_t)
+    val = ManifestDataset(cfg["data"]["manifests"]["validation"], "validation", transform=eval_t)
+    validate_development_splits(train, val)
+    assert train[0]["image"].shape == (3, 224, 224)
+    assert val[0]["split"] == "validation"
+    assert compute_pos_weight_from_train(train) > 0
+    with pytest.raises(ValueError, match="train split"): compute_pos_weight_from_train(val)
+    with pytest.raises(ValueError, match="Expected only validation"):
+        ManifestDataset(cfg["data"]["manifests"]["train"], "validation")

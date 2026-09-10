@@ -33,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.models.factory import create_model
 from src.training.checkpointing import CheckpointManager, load_checkpoint
 from src.training.config import load_config, save_resolved_config
-from src.training.data import ManifestDataset, build_transforms, compute_pos_weight_from_train
+from src.training.data import ManifestDataset, build_transforms, compute_pos_weight_from_train, validate_development_splits
 from src.training.engine import EarlyStopping, step_scheduler, train_epoch, validate
 from src.training.reproducibility import (
     collect_runtime_metadata,
@@ -140,30 +140,9 @@ def make_scaler(enabled: bool):
 def build_loaders(cfg: Dict[str, Any], logger: logging.Logger):
     train_t, eval_t, transform_source = build_transforms(cfg)
     logger.info("preprocessing_source=%s", transform_source)
-    if transform_source == "member3_fallback":
-        logger.warning(
-            "src.data.transforms was not available. Using the contract-compatible Member-3 "
-            "fallback. For the final team run, merge Member 2's preprocessing branch and "
-            "confirm this log says preprocessing_source=src.data.transforms."
-        )
-
-    manifest = Path(cfg["data"]["manifest"])
-    if not manifest.is_absolute():
-        manifest = PROJECT_ROOT / manifest
-    train_ds = ManifestDataset(
-        manifest,
-        "train",
-        split_column=cfg["data"]["split_column"],
-        transform=train_t,
-        data_root=os.getenv("XRAY_DATA_ROOT"),
-    )
-    val_ds = ManifestDataset(
-        manifest,
-        "val",
-        split_column=cfg["data"]["split_column"],
-        transform=eval_t,
-        data_root=os.getenv("XRAY_DATA_ROOT"),
-    )
+    train_ds = ManifestDataset(cfg["data"]["manifests"]["train"], "train", transform=train_t)
+    val_ds = ManifestDataset(cfg["data"]["manifests"]["validation"], "validation", transform=eval_t)
+    validate_development_splits(train_ds, val_ds)
 
     loader_cfg = cfg["data"].get("loader", {})
     workers = int(loader_cfg.get("num_workers", 4))
@@ -290,7 +269,7 @@ def main() -> int:
     model = create_model(cfg).to(device)
     logger.info(
         "model=densenet121 freeze_strategy=%s trainable_params=%d total_params=%d",
-        cfg["model"]["freeze_strategy"],
+        cfg["model"].get("freeze_strategy", "last_block"),
         getattr(model, "trainable_parameter_count", lambda: -1)(),
         getattr(model, "total_parameter_count", lambda: -1)(),
     )
@@ -439,7 +418,7 @@ def main() -> int:
     )
     predictions = pd.DataFrame(final_val.predictions or [])
     predictions.insert(0, "run_id", run_id)
-    predictions.insert(1, "model", "densenet121")
+    predictions.insert(1, "model", cfg["model"]["name"])
     predictions.insert(2, "checkpoint_epoch", best_epoch)
     predictions.to_csv(run_dir / "predictions_val.csv", index=False)
 
@@ -449,8 +428,8 @@ def main() -> int:
         "config_sha256": cfg.get("_meta", {}).get("config_sha256"),
         "seed": int(cfg["seed"]),
         "split_version": cfg["split_version"],
-        "model": "densenet121",
-        "freeze_strategy": cfg["model"]["freeze_strategy"],
+        "model": cfg["model"]["name"],
+        "freeze_strategy": cfg["model"].get("freeze_strategy", "last_block"),
         "best_epoch": best_epoch,
         "selection_metric": "validation_macro_f1_at_threshold_0.5",
         "validation_threshold_for_training_monitor_only": threshold,
@@ -476,7 +455,7 @@ def main() -> int:
             {
                 "run_id": run_id,
                 "owner": "member3",
-                "model": "densenet121",
+                "model": cfg["model"]["name"],
                 "git_sha": sha,
                 "config": cfg.get("_meta", {}).get("source_config"),
                 "config_sha256": cfg.get("_meta", {}).get("config_sha256"),

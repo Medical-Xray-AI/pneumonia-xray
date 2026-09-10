@@ -12,7 +12,7 @@ model:
 training:
   epochs: 15
   batch_size: 16
-  learning_rate: 0.0001
+  learning_rate: 0.0002
   weight_decay: 0.0001
   optimizer: adamw
   loss: weighted_bce_with_logits
