@@ -27,9 +27,9 @@ def _restore_rng_state(state: Optional[Mapping[str, Any]]) -> None:
         return
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch_cpu"])
+    torch.set_rng_state(state["torch_cpu"].cpu())
     if torch.cuda.is_available() and "torch_cuda" in state:
-        torch.cuda.set_rng_state_all(state["torch_cuda"])
+        torch.cuda.set_rng_state_all([value.cpu() for value in state["torch_cuda"]])
 
 
 def _atomic_torch_save(payload: Dict[str, Any], path: Path) -> None:
@@ -134,12 +134,18 @@ def load_checkpoint(
     map_location: str | torch.device = "cpu",
     restore_rng: bool = True,
     strict_model: bool = True,
+    expected_config_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Restore a full training checkpoint and return its metadata."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint does not exist: {path}")
-    ckpt = _torch_load(path, map_location=map_location)
+    # Load metadata/RNG tensors on CPU; load_state_dict moves parameter states as needed.
+    ckpt = _torch_load(path, map_location="cpu")
+    if expected_config_hash is not None:
+        actual = (ckpt.get("config") or {}).get("_meta", {}).get("config_sha256")
+        if actual != expected_config_hash:
+            raise ValueError("Resume config or manifest hash does not match checkpoint")
     model.load_state_dict(ckpt["model_state"], strict=strict_model)
     if optimizer is not None and ckpt.get("optimizer_state") is not None:
         optimizer.load_state_dict(ckpt["optimizer_state"])

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible DenseNet121 training CLI for Member 3.
+"""Reproducible binary-classifier training CLI.
 
 This command trains on ``train`` and selects the best epoch on ``val`` only.
 It never reads the locked ``test`` split. After training, it reloads the best
@@ -9,7 +9,9 @@ checkpoint and exports ``predictions_val.csv`` for Member 4's threshold search.
 from __future__ import annotations
 
 import argparse
-import csv
+import copy
+import hashlib
+import re
 import json
 import logging
 import os
@@ -32,7 +34,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.models.factory import create_model
 from src.training.checkpointing import CheckpointManager, load_checkpoint
-from src.training.config import load_config, save_resolved_config
+from src.training.config import load_config, save_resolved_config, config_sha256
+from src.training.registry import append_registry
 from src.training.data import ManifestDataset, build_transforms, compute_pos_weight_from_train, validate_development_splits
 from src.training.engine import EarlyStopping, step_scheduler, train_epoch, validate
 from src.training.reproducibility import (
@@ -45,7 +48,7 @@ from src.training.reproducibility import (
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train DenseNet121 on leakage-aware split_v1.")
+    p = argparse.ArgumentParser(description="Train a configured binary classifier on split_v1.")
     p.add_argument("--config", required=True, help="YAML config path")
     p.add_argument("--resume", default=None, help="Path to last.pt to resume")
     p.add_argument("--run-id", default=None, help="Override run id")
@@ -69,14 +72,18 @@ def git_sha() -> str:
 
 def make_run_id(config: Dict[str, Any], override: Optional[str]) -> str:
     if override:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", override):
+            raise ValueError("run_id must be a filename-safe identifier")
         return override
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{stamp}_member3_densenet121_s{config['seed']}"
+    return f"{stamp}_{config['model']['name']}_s{config['seed']}"
 
 
 def setup_logger(run_dir: Path) -> logging.Logger:
-    logger = logging.getLogger("member3_train")
+    logger = logging.getLogger("train")
     logger.setLevel(logging.INFO)
+    for handler in logger.handlers:
+        handler.close()
     logger.handlers.clear()
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
     file_handler = logging.FileHandler(run_dir / "train.log", encoding="utf-8")
@@ -152,7 +159,7 @@ def build_loaders(cfg: Dict[str, Any], logger: logging.Logger):
         num_workers=workers,
         pin_memory=torch.cuda.is_available(),
         worker_init_fn=seed_worker if workers > 0 else None,
-        persistent_workers=bool(workers > 0 and loader_cfg.get("persistent_workers", True)),
+        persistent_workers=False,
     )
     train_loader = DataLoader(
         train_ds,
@@ -161,14 +168,14 @@ def build_loaders(cfg: Dict[str, Any], logger: logging.Logger):
         drop_last=False,
         **common,
     )
-    val_loader = DataLoader(val_ds, shuffle=False, drop_last=False, **common)
+    val_loader = DataLoader(val_ds, shuffle=False, drop_last=False, generator=make_generator(int(cfg["seed"]) + 1), **common)
     return train_ds, val_ds, train_loader, val_loader
 
 
 def build_criterion(cfg: Dict[str, Any], train_ds: ManifestDataset, device: torch.device):
     lcfg = cfg["training"]["loss"]
     if str(lcfg.get("name", "bce_with_logits")).lower() != "bce_with_logits":
-        raise ValueError("Member-3 training engine currently supports BCEWithLogitsLoss only.")
+        raise ValueError("Training supports BCEWithLogitsLoss only.")
     pos_weight_cfg = lcfg.get("pos_weight", "auto")
     if str(pos_weight_cfg).lower() == "auto":
         pos_weight = compute_pos_weight_from_train(train_ds)
@@ -186,293 +193,143 @@ def write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
 
-def append_registry(path: Path, row: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "run_id",
-        "owner",
-        "model",
-        "git_sha",
-        "config",
-        "config_sha256",
-        "seed",
-        "split_version",
-        "device",
-        "duration_seconds",
-        "peak_vram_bytes",
-        "best_epoch",
-        "val_loss",
-        "val_macro_f1_at_0_5",
-        "val_sensitivity_at_0_5",
-        "val_specificity_at_0_5",
-        "status",
-    ]
-    exists = path.exists() and path.stat().st_size > 0
-    with path.open("a", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
-        if not exists:
-            writer.writeheader()
-        writer.writerow({k: row.get(k, "") for k in fieldnames})
-
-
 def main() -> int:
     args = parse_args()
     cfg = load_config(args.config)
-    seed_everything(int(cfg["seed"]), deterministic=bool(cfg["training"].get("deterministic", True)))
+    seed_everything(cfg["seed"], deterministic=cfg["training"].get("deterministic", True))
     device = resolve_device(args.device or cfg["training"].get("device", "auto"))
-
-    if args.resume:
-        resume_path = Path(args.resume).expanduser().resolve()
-        if not resume_path.exists():
-            raise FileNotFoundError(f"Resume checkpoint does not exist: {resume_path}")
-        inferred_run_dir = resume_path.parent.parent
-        inferred_run_id = inferred_run_dir.name
-        run_id = args.run_id or inferred_run_id
-        if args.run_id and args.run_id != inferred_run_id:
-            raise ValueError(
-                f"--run-id={args.run_id!r} does not match resume run directory "
-                f"{inferred_run_id!r}. Resume the original run_id."
-            )
-        run_dir = inferred_run_dir
-        run_dir.mkdir(parents=True, exist_ok=True)
+    output_value = os.getenv("XRAY_OUTPUT_ROOT")
+    if not output_value:
+        raise ValueError("Set XRAY_OUTPUT_ROOT before training")
+    output_root = Path(output_value).expanduser().resolve()
+    resume_path = Path(args.resume).resolve() if args.resume else None
+    if resume_path:
+        if not resume_path.is_file():
+            raise FileNotFoundError(resume_path)
+        run_dir = resume_path.parent.parent
+        if run_dir.parent != output_root or resume_path.name != "last.pt":
+            raise ValueError("Resume must use XRAY_OUTPUT_ROOT/<run_id>/checkpoints/last.pt")
+        run_id = make_run_id(cfg, args.run_id or run_dir.name)
+        if run_id != run_dir.name:
+            raise ValueError("Resume run_id does not match the checkpoint directory")
     else:
         run_id = make_run_id(cfg, args.run_id)
-        configured_output = cfg.get("output", {}).get("root")
-        # os.path.expandvars intentionally leaves an unset ${VAR} unchanged.
-        # Fall back to a local outputs/ directory instead of literally creating
-        # a directory named '${XRAY_OUTPUT_ROOT}'.
-        if configured_output and "${" not in str(configured_output):
-            output_root = Path(configured_output)
-        else:
-            output_root = Path(os.getenv("XRAY_OUTPUT_ROOT") or "outputs")
-        if not output_root.is_absolute():
-            output_root = PROJECT_ROOT / output_root
-        run_dir = output_root / "member3_densenet" / run_id
+        run_dir = output_root / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
-    checkpoints_dir = run_dir / "checkpoints"
-    checkpoints_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logger(run_dir)
+    try:
+        return run_training(cfg, args, device, run_id, run_dir, output_root, resume_path, logger)
+    finally:
+        for handler in list(logger.handlers):
+            handler.close()
+            logger.removeHandler(handler)
 
-    sha = git_sha()
-    runtime = collect_runtime_metadata(device)
-    logger.info("run_id=%s", run_id)
-    logger.info("git_sha=%s", sha)
-    logger.info("split_version=%s seed=%s device=%s", cfg["split_version"], cfg["seed"], device)
-    logger.info("runtime=%s", runtime)
-    if not args.resume or not (run_dir / "config.yaml").exists():
-        save_resolved_config(cfg, run_dir / "config.yaml")
-    write_json(run_dir / "runtime.json", runtime)
 
+def run_training(cfg, args, device, run_id, run_dir, output_root, resume_path, logger):
     train_ds, val_ds, train_loader, val_loader = build_loaders(cfg, logger)
-    logger.info("train_counts=%s val_counts=%s", train_ds.class_counts(), val_ds.class_counts())
-
-    model = create_model(cfg).to(device)
-    logger.info(
-        "model=densenet121 freeze_strategy=%s trainable_params=%d total_params=%d",
-        cfg["model"].get("freeze_strategy", "last_block"),
-        getattr(model, "trainable_parameter_count", lambda: -1)(),
-        getattr(model, "total_parameter_count", lambda: -1)(),
-    )
+    # Hash the actual manifests, not just their paths, so resume detects split drift.
+    cfg["manifest_sha256"] = {name: hashlib.sha256(Path(cfg["data"]["manifests"][name]).read_bytes()).hexdigest()
+                              for name in ("train", "validation")}
+    cfg["_meta"]["config_sha256"] = config_sha256(cfg)
+    model_cfg = copy.deepcopy(cfg)
+    if resume_path:
+        model_cfg["model"]["pretrained"] = False
+    model = create_model(model_cfg).to(device)
     optimizer = build_optimizer(model, cfg)
     scheduler = build_scheduler(optimizer, cfg)
     criterion, pos_weight = build_criterion(cfg, train_ds, device)
-    logger.info("bce_pos_weight_from_train=%0.8f", pos_weight)
-
-    amp_enabled = bool(cfg["training"].get("amp", True) and device.type == "cuda")
-    scaler = make_scaler(amp_enabled)
+    amp = bool(cfg["training"].get("amp", False) and device.type == "cuda")
+    scaler = make_scaler(amp)
     ecfg = cfg["training"]["early_stopping"]
-    early = EarlyStopping(
-        patience=int(ecfg.get("patience", 4)),
-        min_delta=float(ecfg.get("min_delta", 0.0)),
-        mode="max",
-    )
-    manager = CheckpointManager(checkpoints_dir, monitor="macro_f1", mode="max")
-
-    start_epoch = 1
-    history = []
-    if args.resume:
-        ckpt = load_checkpoint(
-            resume_path,
-            model=model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            scaler=scaler,
-            early_stopping=early,
-            map_location=device,
-            restore_rng=True,
-        )
-        previous_cfg = ckpt.get("config") or {}
-        previous_hash = previous_cfg.get("_meta", {}).get("config_sha256")
-        current_hash = cfg.get("_meta", {}).get("config_sha256")
-        if previous_hash and current_hash and previous_hash != current_hash:
-            raise ValueError(
-                "Resume config does not match the checkpoint config hash. Use the exact "
-                "same committed/resolved config for an interrupted run rather than "
-                "silently changing hyperparameters."
-            )
+    early = EarlyStopping(patience=int(ecfg.get("patience", 4)), min_delta=float(ecfg.get("min_delta", 0)))
+    manager = CheckpointManager(run_dir / "checkpoints")
+    history, start_epoch = [], 1
+    sha = git_sha()
+    started_at = datetime.now(timezone.utc).isoformat()
+    if resume_path:
+        ckpt = load_checkpoint(resume_path, model=model, optimizer=optimizer, scheduler=scheduler,
+                               scaler=scaler, early_stopping=early, map_location=device,
+                               expected_config_hash=cfg["_meta"]["config_sha256"])
+        if ckpt.get("run_id") != run_id:
+            raise ValueError("Checkpoint run_id mismatch")
+        extra = ckpt["extra"]
+        train_loader.generator.set_state(extra["train_generator_state"].cpu())
+        val_loader.generator.set_state(extra["validation_generator_state"].cpu())
+        history = list(ckpt["history"])
         start_epoch = int(ckpt["epoch"]) + 1
-        history = list(ckpt.get("history") or [])
-        manager.restore_best_metric(ckpt.get("best_metric"))
-        logger.info("resumed_from=%s next_epoch=%d", resume_path, start_epoch)
-
-    max_epochs = int(cfg["training"]["epochs"])
-    threshold = float(cfg["training"].get("training_threshold", 0.5))
-    grad_accum = int(cfg["training"].get("grad_accum_steps", 1))
-    max_grad_norm = cfg["training"].get("max_grad_norm")
-    started = time.perf_counter()
+        manager.restore_best_metric(ckpt["best_metric"])
+        sha = extra["git_sha"]
+        started_at = extra["started_at"]
+        if not manager.best_path.is_file():
+            raise FileNotFoundError("Resume requires the original best.pt alongside last.pt")
+    save_resolved_config(cfg, run_dir / "config.yaml")
+    runtime = collect_runtime_metadata(device)
+    write_json(run_dir / "runtime.json", runtime)
+    logger.info("run_id=%s model=%s split=%s device=%s", run_id, cfg["model"]["name"], cfg["split_version"], device)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-
-    for epoch in range(start_epoch, max_epochs + 1):
-        epoch_started = time.perf_counter()
-        train_res = train_epoch(
-            model,
-            train_loader,
-            optimizer,
-            criterion,
-            device,
-            scaler=scaler,
-            amp=amp_enabled,
-            grad_accum_steps=grad_accum,
-            max_grad_norm=None if max_grad_norm is None else float(max_grad_norm),
-            threshold=threshold,
-        )
-        val_res = validate(
-            model,
-            val_loader,
-            criterion,
-            device,
-            amp=amp_enabled,
-            threshold=threshold,
-            collect_predictions=False,
-        )
+    for epoch in range(start_epoch, int(cfg["training"]["epochs"]) + 1):
+        if early.bad_epochs >= early.patience:
+            break
+        started = time.perf_counter()
+        train_res = train_epoch(model, train_loader, optimizer, criterion, device, scaler=scaler,
+                                amp=amp, grad_accum_steps=cfg["training"]["grad_accum_steps"],
+                                max_grad_norm=cfg["training"].get("max_grad_norm"))
+        val_res = validate(model, val_loader, criterion, device, amp=amp)
         step_scheduler(scheduler, val_res.metrics["macro_f1"])
         should_stop = early.step(val_res.metrics["macro_f1"])
-        epoch_seconds = time.perf_counter() - epoch_started
-        row = {
-            "epoch": epoch,
-            "lr": current_lr(optimizer),
-            "train_loss": train_res.loss,
-            "train_macro_f1": train_res.metrics["macro_f1"],
-            "val_loss": val_res.loss,
-            "val_macro_f1": val_res.metrics["macro_f1"],
-            "val_sensitivity": val_res.metrics["sensitivity"],
-            "val_specificity": val_res.metrics["specificity"],
-            "epoch_seconds": epoch_seconds,
-        }
-        history.append(row)
+        history.append({"epoch": epoch, "lr": current_lr(optimizer), "train_loss": train_res.loss,
+                        "train_macro_f1": train_res.metrics["macro_f1"], "val_loss": val_res.loss,
+                        "val_macro_f1": val_res.metrics["macro_f1"],
+                        "val_pneumonia_sensitivity": val_res.metrics["sensitivity"],
+                        "val_specificity": val_res.metrics["specificity"],
+                        "epoch_seconds": time.perf_counter() - started})
+        manager.save(epoch=epoch, metric_value=val_res.metrics["macro_f1"], model=model,
+                     optimizer=optimizer, scheduler=scheduler, scaler=scaler, early_stopping=early,
+                     config=cfg, run_id=run_id, history=history,
+                     extra={"git_sha": sha, "started_at": started_at, "pos_weight": pos_weight,
+                            "train_generator_state": train_loader.generator.get_state(),
+                            "validation_generator_state": val_loader.generator.get_state()})
         pd.DataFrame(history).to_csv(run_dir / "history.csv", index=False)
-
-        improved = manager.save(
-            epoch=epoch,
-            metric_value=val_res.metrics["macro_f1"],
-            model=model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            scaler=scaler,
-            early_stopping=early,
-            config=cfg,
-            run_id=run_id,
-            history=history,
-            extra={"git_sha": sha, "pos_weight": pos_weight, "runtime": runtime},
-        )
-        logger.info(
-            "epoch=%d/%d train_loss=%.5f train_f1=%.4f val_loss=%.5f val_f1=%.4f "
-            "sens=%.4f spec=%.4f lr=%.3g best=%s time=%.1fs",
-            epoch,
-            max_epochs,
-            train_res.loss,
-            train_res.metrics["macro_f1"],
-            val_res.loss,
-            val_res.metrics["macro_f1"],
-            val_res.metrics["sensitivity"],
-            val_res.metrics["specificity"],
-            current_lr(optimizer),
-            improved,
-            epoch_seconds,
-        )
-
+        logger.info("epoch=%d train_loss=%.5f val_loss=%.5f val_macro_f1=%.4f", epoch, train_res.loss, val_res.loss, val_res.metrics["macro_f1"])
         if should_stop:
-            logger.info("early_stopping_triggered epoch=%d", epoch)
             break
-
-    duration = time.perf_counter() - started
-    peak_vram = int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else 0
-
-    # Reload best epoch before exporting validation probabilities for Member 4.
-    best_ckpt = load_checkpoint(
-        manager.best_path,
-        model=model,
-        map_location=device,
-        restore_rng=False,
-    )
-    best_epoch = int(best_ckpt["epoch"])
-    final_val = validate(
-        model,
-        val_loader,
-        criterion,
-        device,
-        amp=amp_enabled,
-        threshold=threshold,
-        collect_predictions=True,
-    )
-    predictions = pd.DataFrame(final_val.predictions or [])
+    best = load_checkpoint(manager.best_path, model=model, map_location=device, restore_rng=False,
+                           expected_config_hash=cfg["_meta"]["config_sha256"])
+    final = validate(model, val_loader, criterion, device, amp=amp, collect_predictions=True)
+    predictions = pd.DataFrame(final.predictions)
     predictions.insert(0, "run_id", run_id)
     predictions.insert(1, "model", cfg["model"]["name"])
-    predictions.insert(2, "checkpoint_epoch", best_epoch)
+    predictions.insert(2, "checkpoint_epoch", best["epoch"])
     predictions.to_csv(run_dir / "predictions_val.csv", index=False)
-
-    metrics = {
-        "run_id": run_id,
-        "git_sha": sha,
-        "config_sha256": cfg.get("_meta", {}).get("config_sha256"),
-        "seed": int(cfg["seed"]),
-        "split_version": cfg["split_version"],
-        "model": cfg["model"]["name"],
-        "freeze_strategy": cfg["model"].get("freeze_strategy", "last_block"),
-        "best_epoch": best_epoch,
-        "selection_metric": "validation_macro_f1_at_threshold_0.5",
-        "validation_threshold_for_training_monitor_only": threshold,
-        "val_loss": final_val.loss,
-        "val_metrics_at_0_5": final_val.metrics,
-        "pos_weight_from_train": pos_weight,
-        "duration_seconds": duration,
-        "peak_vram_bytes": peak_vram,
-        "best_checkpoint": str(manager.best_path),
-        "test_evaluated": False,
-    }
+    duration = sum(row["epoch_seconds"] for row in history)
+    peak_vram = int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else 0
+    reference = manager.best_path.relative_to(output_root).as_posix()
+    metrics = {"run_id": run_id, "model": cfg["model"]["name"], "git_sha": sha,
+               "config_sha256": cfg["_meta"]["config_sha256"], "seed": cfg["seed"],
+               "split_version": cfg["split_version"], "best_epoch": best["epoch"],
+               "selection_metric": "validation_macro_f1_at_threshold_0.5", "threshold": 0.5,
+               "val_loss": final.loss, "val_metrics_at_0_5": final.metrics,
+               "pos_weight_from_train": pos_weight, "duration_seconds": duration,
+               "peak_vram_bytes": peak_vram, "best_checkpoint": reference, "test_evaluated": False}
     write_json(run_dir / "metrics.json", metrics)
-
-    logger.info("best_epoch=%d best_val_macro_f1=%.4f", best_epoch, final_val.metrics["macro_f1"])
-    logger.info("duration_seconds=%.1f peak_vram_bytes=%d", duration, peak_vram)
-    logger.info("validation_predictions=%s", run_dir / "predictions_val.csv")
-    logger.info("LOCKED TEST WAS NOT EVALUATED.")
-
     if args.update_registry:
-        registry_path = PROJECT_ROOT / "docs" / "experiment_registry.csv"
-        append_registry(
-            registry_path,
-            {
-                "run_id": run_id,
-                "owner": "member3",
-                "model": cfg["model"]["name"],
-                "git_sha": sha,
-                "config": cfg.get("_meta", {}).get("source_config"),
-                "config_sha256": cfg.get("_meta", {}).get("config_sha256"),
-                "seed": cfg["seed"],
-                "split_version": cfg["split_version"],
-                "device": str(device),
-                "duration_seconds": f"{duration:.3f}",
-                "peak_vram_bytes": peak_vram,
-                "best_epoch": best_epoch,
-                "val_loss": f"{final_val.loss:.8f}",
-                "val_macro_f1_at_0_5": f"{final_val.metrics['macro_f1']:.8f}",
-                "val_sensitivity_at_0_5": f"{final_val.metrics['sensitivity']:.8f}",
-                "val_specificity_at_0_5": f"{final_val.metrics['specificity']:.8f}",
-                "status": "complete",
-            },
-        )
-        logger.info("registry_appended=%s", registry_path)
+        source_config = Path(cfg["_meta"]["source_config"])
+        try:
+            config_reference = source_config.relative_to(PROJECT_ROOT).as_posix()
+        except ValueError:
+            config_reference = (run_dir / "config.yaml").relative_to(output_root).as_posix()
+        append_registry(PROJECT_ROOT / "docs/experiment_registry.csv", {
+            "run_id": run_id, "owner": "", "status": "complete", "commit_sha": sha,
+            "config": config_reference, "seed": cfg["seed"], "split_version": cfg["split_version"],
+            "device": str(device), "start_time": started_at, "end_time": datetime.now(timezone.utc).isoformat(),
+            "duration_minutes": duration / 60, "peak_vram_gb": peak_vram / 1024**3,
+            "best_epoch": best["epoch"], "val_macro_f1": final.metrics["macro_f1"],
+            "val_pneumonia_sensitivity": final.metrics["sensitivity"], "val_specificity": final.metrics["specificity"],
+            "val_roc_auc": final.metrics["roc_auc"], "val_pr_auc": final.metrics["pr_auc"],
+            "test_evaluated": False, "checkpoint_path": reference,
+            "notes": f"model={cfg['model']['name']}; config_sha256={cfg['_meta']['config_sha256']}"})
+    logger.info("Validation predictions saved. Locked test was not evaluated.")
     return 0
 
 

@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import torch
 from torch import nn
+from sklearn.metrics import roc_auc_score, average_precision_score
 
 
 @dataclass
@@ -108,6 +109,8 @@ def _binary_metrics(labels: torch.Tensor, probs: torch.Tensor, threshold: float 
     f1_neg = safe_div(2 * precision_neg * recall_neg, precision_neg + recall_neg)
 
     return {
+        "roc_auc": float(roc_auc_score(labels.numpy(), probs.numpy())) if labels.unique().numel() == 2 else 0.0,
+        "pr_auc": float(average_precision_score(labels.numpy(), probs.numpy())) if labels.unique().numel() == 2 else 0.0,
         "accuracy": safe_div(tp + tn, tp + tn + fp + fn),
         "macro_f1": (f1_pos + f1_neg) / 2.0,
         "sensitivity": recall_pos,
@@ -151,7 +154,10 @@ def train_epoch(
     all_labels: List[torch.Tensor] = []
     all_probs: List[torch.Tensor] = []
 
-    n_batches = len(loader) if hasattr(loader, "__len__") else None
+    if not hasattr(loader, "__len__"):
+        raise ValueError("Training requires a sized loader for accumulation")
+    n_batches = len(loader)
+    accumulated_samples = 0
     for step, batch in enumerate(loader):
         images, labels, _ = _unpack_batch(batch)
         images = images.to(device, non_blocking=True)
@@ -160,7 +166,8 @@ def train_epoch(
         with _autocast_context(device, amp):
             logits = _flatten_logits(model(images))
             loss = criterion(logits, labels)
-            scaled_loss = loss / grad_accum_steps
+            scaled_loss = loss * labels.numel()
+        accumulated_samples += labels.numel()
 
         if scaler is not None and scaler.is_enabled():
             scaler.scale(scaled_loss).backward()
@@ -171,9 +178,13 @@ def train_epoch(
             n_batches is not None and step + 1 == n_batches
         )
         if should_step:
+            if scaler is not None and scaler.is_enabled():
+                scaler.unscale_(optimizer)
+            for parameter in model.parameters():
+                if parameter.grad is not None:
+                    parameter.grad.div_(accumulated_samples)
+            accumulated_samples = 0
             if max_grad_norm is not None:
-                if scaler is not None and scaler.is_enabled():
-                    scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), float(max_grad_norm))
             if scaler is not None and scaler.is_enabled():
                 scaler.step(optimizer)
