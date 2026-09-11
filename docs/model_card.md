@@ -38,16 +38,34 @@ only (macro F1, ties -> higher sensitivity, then lower threshold).
 
 | Split | Model | Threshold | Macro F1 | Sensitivity | Specificity | ROC-AUC | PR-AUC |
 |---|---|---|---|---|---|---|---|
-| Validation | small_cnn | pending | pending | pending | pending | pending | pending |
-| Validation | densenet121 | pending | pending | pending | pending | pending | pending |
-| Locked test (once) | frozen model | frozen | pending | pending | pending | pending | pending |
+| Validation | small_cnn | 0.5293 | 0.9489 | 0.9781 | 0.9114 | 0.9873 | 0.9948 |
+| Validation | **densenet121 (selected)** | **0.5024** | **0.9643** | 0.9734 | **0.9662** | **0.9952** | **0.9983** |
+| Locked test (once) | densenet121 | 0.5024 | pending | pending | pending | pending | pending |
+
+Validation, n = 877 (237 normal, 640 pneumonia). Confusion matrices (TN/FP/FN/TP):
+small_cnn 216/21/14/626, densenet121 229/8/17/623. The selected DenseNet121
+misses three more pneumonia images than the baseline but raises 13 fewer false
+alarms. Its false-negative rate is 1.5% for bacterial and 4.7% for viral
+pneumonia. Validation numbers are optimistic because model and threshold were
+selected on the same split; the locked test is the unbiased estimate.
+
+Training cost (single A100 MIG 3g.20gb slice, commit `3477b6c`, seed 42):
+
+| Run | Best epoch | Epochs run | Training time | Peak VRAM |
+|---|---|---|---|---|
+| `baseline_s42` (small_cnn) | 20 | 20 | 7.2 min | 0.65 GB |
+| `densenet121_s42` | 5 | 9 (early stopping) | 3.9 min | 0.15 GB |
+
+DenseNet121 updates only `denseblock4`, `norm5` and the classifier
+(`freeze_strategy: last_block`) with batch size 16 and mixed precision; the
+baseline trains all layers with batch size 32.
 
 Sources: `report/tables/validation_metrics.csv`, `report/tables/test_metrics.csv`,
 subgroup errors in `report/tables/error_by_subtype.csv`.
 
-Efficiency (from `python run_all.py benchmark --checkpoint <best.pt>`):
-parameters, weights size and median latency per image are recorded here for the
-frozen model on the GPU server and on CPU: pending.
+Efficiency, bootstrap intervals and inference consistency come from
+`python scripts/release_experiments.py` (`report/tables/efficiency.csv`,
+`validation_bootstrap_ci.csv`, `inference_consistency.json`): pending.
 
 ## Limitations and risks
 
