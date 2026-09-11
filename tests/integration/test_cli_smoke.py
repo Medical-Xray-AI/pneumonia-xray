@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def run_cli(*args, env=None):
     clean = {k: v for k, v in os.environ.items() if not k.startswith("XRAY_")}
+    clean["XRAY_SKIP_DOTENV"] = "1"
     clean.update(env or {})
     return subprocess.run([sys.executable, "run_all.py", *args], cwd=ROOT, env=clean,
                           capture_output=True, text=True)
@@ -34,6 +35,19 @@ def test_check_and_legacy_alias_pass_without_data():
     assert run_cli("check").returncode == 0
     legacy = run_cli("--check")
     assert legacy.returncode == 0 and "check passed" in legacy.stdout
+
+
+def test_dotenv_is_loaded_only_when_not_skipped(tmp_path, monkeypatch):
+    from src import pipeline
+    env_file = tmp_path / ".env"
+    env_file.write_text("XRAY_OUTPUT_ROOT=/should/not/leak\n")
+    monkeypatch.delenv("XRAY_OUTPUT_ROOT", raising=False)
+    assert pipeline.load_env_file(env_file) is False
+    assert "XRAY_OUTPUT_ROOT" not in os.environ
+    monkeypatch.setenv("XRAY_SKIP_DOTENV", "0")
+    assert pipeline.load_env_file(env_file) is True
+    assert os.environ["XRAY_OUTPUT_ROOT"] == "/should/not/leak"
+    monkeypatch.delenv("XRAY_OUTPUT_ROOT")
 
 
 def test_invalid_inputs_fail_fast_with_exit_codes(tmp_path):

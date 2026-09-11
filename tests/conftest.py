@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,10 @@ from PIL import Image
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
+
+# A developer's real .env must never point tests (or the CLIs they spawn)
+# at the real dataset or output directory.
+os.environ["XRAY_SKIP_DOTENV"] = "1"
 
 
 def write_image(path: Path, seed: int, size: tuple[int, int] = (32, 24)) -> None:
