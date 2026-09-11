@@ -1,0 +1,4 @@
+pneumonia_subtype,n_images,n_normal,n_pneumonia,false_negatives,false_positives,false_negative_rate,false_positive_rate,mean_probability
+bacterial,407,0,407,6,0,0.014742014742014743,0.0,0.9698366357301904
+normal,237,237,0,0,8,0.0,0.03375527426160337,0.07011957812409862
+viral,233,0,233,11,0,0.04721030042918455,0.0,0.924959829436863

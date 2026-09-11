@@ -1,0 +1,49 @@
+{
+  "recommended_model": "densenet121",
+  "threshold": 0.50244140625,
+  "objective": "macro_f1",
+  "selected_on": "validation",
+  "run_id": "densenet121_s42",
+  "validation_manifest_sha256": "0b5fc05d2ff2c77c1f8cc1d2d3a4eafabba39b576fea21c4d0e428a7280efd1e",
+  "validation_macro_f1": 0.9642853070486224,
+  "validation_pneumonia_sensitivity": 0.9734375,
+  "validation_specificity": 0.9662447257383966,
+  "selection_rule": "argmax macro_f1; ties -> max pneumonia_sensitivity; ties -> min threshold",
+  "per_model_selection": {
+    "small_cnn": {
+      "threshold": 0.529296875,
+      "objective": "macro_f1",
+      "objective_value": 0.9489292529977755,
+      "macro_f1": 0.9489292529977755,
+      "pneumonia_sensitivity": 0.978125,
+      "specificity": 0.9113924050632911,
+      "n_candidates": 392,
+      "n_tied": 1,
+      "selection_rule": "argmax macro_f1; ties -> max pneumonia_sensitivity; ties -> min threshold"
+    },
+    "densenet121": {
+      "threshold": 0.50244140625,
+      "objective": "macro_f1",
+      "objective_value": 0.9642853070486224,
+      "macro_f1": 0.9642853070486224,
+      "pneumonia_sensitivity": 0.9734375,
+      "specificity": 0.9662447257383966,
+      "n_candidates": 363,
+      "n_tied": 1,
+      "selection_rule": "argmax macro_f1; ties -> max pneumonia_sensitivity; ties -> min threshold"
+    }
+  },
+  "error_summary": {
+    "threshold": 0.50244140625,
+    "false_negatives": {
+      "count": 17,
+      "most_confident_probability": 0.0054473876953125,
+      "mean_probability": 0.1983507941750919
+    },
+    "false_positives": {
+      "count": 8,
+      "most_confident_probability": 0.74853515625,
+      "mean_probability": 0.62432861328125
+    }
+  }
+}
