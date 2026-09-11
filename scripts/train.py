@@ -144,6 +144,20 @@ def make_scaler(enabled: bool):
         return torch.cuda.amp.GradScaler(enabled=enabled)
 
 
+def resolve_num_workers(loader_cfg: Dict[str, Any]) -> int:
+    """Config ``data.loader.num_workers``, else ``XRAY_NUM_WORKERS``, else 4."""
+    value = loader_cfg.get("num_workers")
+    if value is None:
+        value = os.getenv("XRAY_NUM_WORKERS") or 4
+    try:
+        workers = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"num_workers must be an integer, got {value!r}") from exc
+    if workers < 0:
+        raise ValueError("num_workers cannot be negative")
+    return workers
+
+
 def build_loaders(cfg: Dict[str, Any], logger: logging.Logger):
     train_t, eval_t, transform_source = build_transforms(cfg)
     logger.info("preprocessing_source=%s", transform_source)
@@ -151,8 +165,8 @@ def build_loaders(cfg: Dict[str, Any], logger: logging.Logger):
     val_ds = ManifestDataset(cfg["data"]["manifests"]["validation"], "validation", transform=eval_t)
     validate_development_splits(train_ds, val_ds)
 
-    loader_cfg = cfg["data"].get("loader", {})
-    workers = int(loader_cfg.get("num_workers", 4))
+    workers = resolve_num_workers(cfg["data"].get("loader", {}))
+    logger.info("num_workers=%d", workers)
     batch_size = int(cfg["training"]["batch_size"])
     common = dict(
         batch_size=batch_size,
