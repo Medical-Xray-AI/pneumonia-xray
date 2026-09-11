@@ -19,7 +19,7 @@ except ImportError:  # Explicit --data-root remains available in minimal setups.
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-if load_dotenv is not None:
+if load_dotenv is not None and os.getenv("XRAY_SKIP_DOTENV") != "1":
     load_dotenv(REPOSITORY_ROOT / ".env", override=False)
 
 

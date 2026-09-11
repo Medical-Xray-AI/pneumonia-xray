@@ -41,8 +41,12 @@ class CheckResult:
 
 
 def load_env_file(path: Path = PROJECT_ROOT / ".env") -> bool:
-    """Load the local ``.env`` without overriding variables already set."""
-    if not path.is_file():
+    """Load the local ``.env`` without overriding variables already set.
+
+    ``XRAY_SKIP_DOTENV=1`` disables this (the test suite sets it so tests
+    never pick up a real dataset or output directory).
+    """
+    if os.getenv("XRAY_SKIP_DOTENV") == "1" or not path.is_file():
         return False
     try:
         from dotenv import load_dotenv
