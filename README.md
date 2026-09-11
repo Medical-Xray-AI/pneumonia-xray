@@ -97,13 +97,17 @@ Reported image-level metrics:
 |-- scripts/
 |   |-- download_data.py
 |   |-- train.py                # shared baseline / DenseNet training
-|   `-- evaluate_model.py       # manifest-checked evaluation
+|   |-- evaluate_model.py       # manifest-checked evaluation
+|   |-- verify_release.py       # release and clean-clone verification
+|   `-- audit_environment.py    # GPU environment audit and lock file
 |-- src/
 |   |-- data/
 |   |-- preprocessing/
 |   |-- models/
 |   |-- training/
-|   `-- evaluation/
+|   |-- evaluation/
+|   |-- inference/              # checkpoint inference and output schema
+|   `-- pipeline.py             # stages behind run_all.py
 |-- tests/
 |-- .env.example
 |-- .gitignore
@@ -169,30 +173,66 @@ The real `.env` file must remain local and must never be committed.
 
 ### 5. Check the GPU environment
 
-Before installing or upgrading PyTorch on the shared GPU server, follow [`docs/GPU_GUIDE.md`](docs/GPU_GUIDE.md). Dependency versions remain provisional until the server's Python, CUDA, PyTorch, and torchvision versions have been audited.
+Before installing or upgrading PyTorch on the shared GPU server, follow [`docs/GPU_GUIDE.md`](docs/GPU_GUIDE.md). `requirements.txt` holds compatible version ranges. After the tests pass on the server, record its exact versions with `python scripts/audit_environment.py --write-lock requirements-lock.txt`.
 
-### 6. Verify the repository entry point
+### 6. Verify the repository and environment
 
 ```bash
-python run_all.py --check
+python run_all.py check --require-data
+python -m pytest -q
 ```
 
-`run_all.py` is still a config-existence check. Train and evaluate using the
-working commands below (set the environment variables in your shell first):
+`run_all.py` reads `XRAY_DATA_ROOT`, `XRAY_OUTPUT_ROOT` and `XRAY_NUM_WORKERS`
+from the shell or from the local `.env`.
+
+### 7. Train and freeze on validation (full run)
 
 ```bash
-python scripts/train.py --config configs/baseline.yaml --run-id baseline_run
-python scripts/train.py --config configs/densenet121.yaml --run-id densenet_run
-python scripts/evaluate_model.py validation \
-    --predictions small_cnn=$XRAY_OUTPUT_ROOT/baseline_run/predictions_val.csv \
-    --predictions densenet121=$XRAY_OUTPUT_ROOT/densenet_run/predictions_val.csv \
+python run_all.py develop --run-ids baseline_s42 densenet121_s42 --update-registry
+```
+
+This trains `configs/baseline.yaml` and `configs/densenet121.yaml`, exports
+`predictions_val.csv` for each run, compares them on validation and writes
+`report/tables/frozen_threshold.json`. If a run is interrupted, repeat the same
+command: finished runs are reused and unfinished ones resume from
+`checkpoints/last.pt`. Add `--device cuda:0` to select a GPU. Single stages are
+also available:
+
+```bash
+python run_all.py train --config configs/densenet121.yaml --run-id densenet121_s42
+python run_all.py evaluate validation \
+    --predictions small_cnn=$XRAY_OUTPUT_ROOT/baseline_s42/predictions_val.csv \
+    --predictions densenet121=$XRAY_OUTPUT_ROOT/densenet121_s42/predictions_val.csv \
     --manifest data/manifests/validation.csv --out-dir report
 ```
 
+### 8. Locked test (once, after the team freezes model and threshold)
+
+```bash
+python run_all.py infer --checkpoint $XRAY_OUTPUT_ROOT/<run_id>/checkpoints/best.pt \
+    --split test --threshold-file report/tables/frozen_threshold.json
+python run_all.py evaluate test \
+    --predictions <model>=$XRAY_OUTPUT_ROOT/<run_id>/predictions_test.csv \
+    --manifest data/manifests/test.csv \
+    --threshold-file report/tables/frozen_threshold.json --out-dir report
+```
+
+Test inference refuses to run without a frozen selection that names the same
+model and run, and refuses to overwrite an existing `predictions_test.csv`.
+
+### 9. Inference, benchmark and release verification
+
+```bash
+python run_all.py infer --checkpoint <best.pt> --threshold-file report/tables/frozen_threshold.json --image xray.jpeg
+python run_all.py benchmark --checkpoint <best.pt>
+python run_all.py verify-release --with-data --clean-clone
+```
+
 See [training and resume usage](docs/training_protocol.md) for PowerShell,
-output paths and reproducible resume. See [evaluation protocol](docs/evaluation_protocol.md)
-for the frozen-model contract. Full dataset results are produced by actual
-training runs; synthetic checks are not project performance results.
+output paths and reproducible resume, the [evaluation protocol](docs/evaluation_protocol.md)
+for the frozen-model contract, the [release checklist](docs/release_checklist.md)
+and the [model card](docs/model_card.md). Full dataset results are produced by
+actual training runs; synthetic checks are not project performance results.
 
 ## Dataset
 
@@ -254,7 +294,9 @@ Development is branch- and pull-request-based. Direct development on `main` is a
 - [x] Custom CNN baseline
 - [x] DenseNet121 training pipeline
 - [x] Image-level evaluation and interpretation
-- [ ] End-to-end inference and clean-clone verification
+- [x] End-to-end CLI, checkpoint inference and clean-clone verification
+- [ ] Full dataset runs, validation freeze and single locked-test run
+- [ ] Exact GPU-server lock file
 - [ ] Final report and presentation
 
 ## Security and data policy

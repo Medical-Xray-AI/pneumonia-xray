@@ -1,3 +1,13 @@
+# Member 5: inference, integration and release
+
+- Added checkpoint-based single-image, batch and manifest inference (`src/inference/`) with a validated output schema.
+- Inference rebuilds the model from the checkpoint config, never downloads ImageNet weights and reuses the stored train-derived normalization.
+- Locked-test inference requires the matching validation `frozen_threshold.json` and never overwrites an existing test prediction file.
+- `run_all.py` now provides `check`, `train`, `develop`, `evaluate`, `infer`, `benchmark` and `verify-release`; `develop` reuses finished runs and resumes interrupted ones.
+- Added `scripts/verify_release.py` (secret, path and file scan, registry, freeze, inference smoke, clean clone) and `scripts/audit_environment.py` (GPU audit and lock file).
+- `requirements.txt` now uses tested compatible ranges; the exact lock is generated on the GPU server.
+- Added the model card and release checklist.
+
 # Corrections made to Member 1 submission
 
 - Replaced subtype-blind numeric pneumonia IDs with subtype-aware patient keys.

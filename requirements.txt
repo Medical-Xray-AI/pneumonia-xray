@@ -1,16 +1,21 @@
-# Provisional dependency list.
-# Pin exact versions only after auditing the shared GPU environment.
+# Compatible ranges for every environment (CPU laptops and the GPU server).
+# The test suite was verified with Python 3.12, torch 2.14 (CPU), torchvision
+# 0.29, numpy 2.5, pandas 3.0. On the shared GPU server, install the torch
+# build matching its CUDA runtime first (docs/GPU_GUIDE.md), then write the exact
+# verified pins with:
+#     python scripts/audit_environment.py --write-lock requirements-lock.txt
+# and reproduce that environment with `pip install -r requirements-lock.txt`.
 
-torch
-torchvision
-numpy
-pandas
-Pillow
-PyYAML
-python-dotenv
-scikit-learn
-matplotlib
-seaborn
-tqdm
-pytest
-kagglehub
+torch>=2.3,<3
+torchvision>=0.18,<1
+numpy>=1.26,<3
+pandas>=2.1,<4
+Pillow>=10.0,<13
+PyYAML>=6.0,<7
+python-dotenv>=1.0,<2
+scikit-learn>=1.4,<2
+matplotlib>=3.8,<4
+seaborn>=0.13,<1
+tqdm>=4.66,<5
+pytest>=8.0,<10
+kagglehub>=0.3,<2
