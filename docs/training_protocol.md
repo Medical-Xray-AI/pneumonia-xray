@@ -82,5 +82,7 @@ python -m pytest tests -q
 Tests cover both actual model wrappers, synthetic training to validation export
 to evaluation, small baseline overfit, checkpoint resume, split/label guards
 and Grad-CAM for frozen backbones. These do not replace full dataset training.
-Real experiment tables, final test predictions, inference/release integration,
-`run_all.py` orchestration and the final report remain subsequent work.
+`python run_all.py develop` runs both configs and the validation freeze in
+one command, reusing finished runs and resuming interrupted ones. Real
+experiment tables, the single locked-test run and the final report remain
+subsequent work.

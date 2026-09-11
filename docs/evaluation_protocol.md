@@ -99,8 +99,10 @@ the threshold.
 These checks prevent accidental split or run substitution; they do not
 cryptographically authenticate user-edited CSVs or enforce a one-time lock.
 The team remains responsible for performing the final test only once and
-recording that event. The shared training command exports validation only;
-test prediction/inference integration remains release work.
+recording that event. The shared training command exports validation only.
+`python run_all.py infer --split test` exports `predictions_test.csv` from the
+frozen checkpoint; it requires the frozen selection for the same model and run
+and will not overwrite an existing test prediction file.
 
 ## Commands
 
@@ -113,6 +115,8 @@ python scripts/evaluate_model.py validation \
     --out-dir report
 
 # 2. Locked test: exactly once, at the frozen threshold
+python run_all.py infer --checkpoint $XRAY_OUTPUT_ROOT/<run>/checkpoints/best.pt \
+    --split test --threshold-file report/tables/frozen_threshold.json
 python scripts/evaluate_model.py test \
     --predictions densenet121=$XRAY_OUTPUT_ROOT/<run>/predictions_test.csv \
     --manifest data/manifests/test.csv \

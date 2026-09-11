@@ -261,8 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(argv: Optional[List[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
     try:
         if args.mode == "validation":
             return run_validation(args)
