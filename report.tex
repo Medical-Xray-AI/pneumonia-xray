@@ -1,0 +1,363 @@
+% =====================================================================
+%  Pediatric pneumonia detection -- IEEE conference report
+%  Compile from this folder:  pdflatex report.tex  (run twice)
+%
+%  PLACEHOLDERS: every value still to be filled is a red \tbd or \TBD{...}.
+%  Before submission this must print nothing:   grep -n -i "tbd" report.tex
+%  Missing figures render as a red box naming the expected file; they
+%  appear automatically once the file exists under report/figures/.
+%
+%  Section owners (team plan): M1 data, M2 baseline, M3 main model,
+%  M4 evaluation, M5 reproducibility/final. Owners are marked per section.
+% =====================================================================
+\documentclass[conference]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{xcolor}
+
+\newcommand{\TBD}[1]{{\color{red}\textbf{[TBD: #1]}}}
+\def\UrlBreaks{\do\/\do-\do.} % let the long repository URL wrap in the abstract
+\Urlmuskip=0mu plus 2mu
+\newcommand{\tbd}{{\color{red}\textbf{TBD}}}
+% \figslot{path}{height}: the figure if it exists, otherwise a labelled box.
+\newcommand{\figslot}[2]{%
+  \IfFileExists{#1}%
+    {\includegraphics[width=0.95\columnwidth,height=#2,keepaspectratio]{#1}}%
+    {\fcolorbox{red}{white}{\parbox[c][#2][c]{0.9\columnwidth}{\centering
+      \color{red}\footnotesize figure pending\\\texttt{\detokenize{#1}}}}}}
+
+\begin{document}
+
+\title{Leakage-Aware Pediatric Pneumonia Detection from Chest Radiographs: A Custom CNN versus a Pretrained DenseNet-121}
+
+% Surname, Given name(s); sorted A->Z by surname. Fill the two unknown
+% members, re-sort, and confirm spellings (git shows Merdeliyeva/Mardaliyeva).
+\author{\IEEEauthorblockN{Mammadli, Madina, Khasiyeva, Seljan, Rahimli, Ulkar, Aliyeva, Nazrin, and Mardaliyeva, Aytan}
+\IEEEauthorblockA{AI Academy, National Artificial Intelligence Center, Baku, Azerbaijan \\
+\{\TBD{emails in author order}\}@aiacademy.az}
+}
+
+\maketitle
+
+\begin{abstract}
+Pneumonia is a major cause of childhood mortality, and chest radiography is the most common test used to confirm it. We study image-level normal-versus-pneumonia classification on the public Kermany pediatric chest X-ray dataset (5,856 images, CC BY 4.0) and ask whether an ImageNet-pretrained DenseNet-121 improves on a small custom CNN when both are trained and evaluated under the same leakage-aware protocol. The provided dataset split has a 16-image validation folder and patient overlap, so we rebuild a patient-grouped 70/15/15 split (4,102/877/877 images) that keeps filename-derived patient keys, exact duplicates and near-duplicates inside one partition. Models are selected by validation macro F1; the decision threshold is chosen on validation data only and frozen before the test set is evaluated once. On validation, DenseNet-121 reaches a macro F1 of 0.964 against 0.949 for the baseline. On the locked test set the frozen model reaches a macro F1 of \tbd{} and a pneumonia sensitivity of \tbd{}. Subgroup analysis on validation shows that the selected model misses viral pneumonia about three times as often as bacterial pneumonia (4.7\% versus 1.5\%). GitHub repository \texttt{Medical-Xray-AI/pneumonia-xray} (tag \texttt{v1.0-final}): \url{https://github.com/Medical-Xray-AI/pneumonia-xray/tree/v1.0-final}.
+\end{abstract}
+
+\begin{IEEEkeywords}
+deep learning, chest radiography, pediatric pneumonia, transfer learning, data leakage, DenseNet
+\end{IEEEkeywords}
+
+% ---------------------------------------------------------------------
+% INTRODUCTION -- owner: Member 1
+% ---------------------------------------------------------------------
+\section{Introduction}
+\label{sec:intro}
+Pneumonia is the single largest infectious cause of death in children worldwide~\cite{who-pneumonia}. Chest radiographs are cheap and widely available, but reading them takes trained radiologists, who are scarce in many of the settings where the disease burden is highest. An automated screening aid that flags likely pneumonia could help prioritise reading queues, provided its error rates are measured honestly.
+
+The Kermany pediatric chest X-ray dataset~\cite{kermany2018,kermany-data} is the most widely used public benchmark for this task. Two properties of its public release complicate honest evaluation. First, the provided validation folder contains only 16 images, which is too small for model selection, early stopping or threshold choice. Second, our audit found exact- and near-duplicate images linking the provided training and test partitions, so scores on the provided test folder can overestimate generalisation to unseen children.
+
+This paper makes the following contributions:
+\begin{itemize}
+\item An audit of the dataset and a rebuilt, patient-grouped split (\texttt{split\_v1}) in which filename-derived patient keys, exact hashes and near-duplicate groups never cross partitions.
+\item A controlled comparison of a 0.4M-parameter custom CNN and an ImageNet-pretrained DenseNet-121, trained with the same data pipeline, loss and evaluation code.
+\item An ablation of fine-tuning depth and learning rate for the pretrained model.
+\item A validation-only threshold selection protocol with a single evaluation of the locked test set, a per-subtype error analysis (bacterial versus viral pneumonia) and a Grad-CAM sanity check.
+\item A reproducible pipeline with pinned dependencies, deterministic seeds, resumable checkpoints and a single entry point.
+\end{itemize}
+
+Section~\ref{sec:related} reviews prior work, Section~\ref{sec:method} describes the models and training, Section~\ref{sec:setup} the data and protocol, Section~\ref{sec:results} the results, and Section~\ref{sec:discussion} discusses limitations and deployment.
+
+% ---------------------------------------------------------------------
+% RELATED WORK -- owner: Member 3
+% ---------------------------------------------------------------------
+\section{Related Work}
+\label{sec:related}
+Kermany et al.~\cite{kermany2018} released the dataset used here together with a transfer-learning classifier, showing that ImageNet-pretrained CNNs can be adapted to medical images with a few thousand labelled examples. On the larger adult ChestX-ray14 dataset~\cite{wang2017}, CheXNet~\cite{rajpurkar2017} fine-tuned a DenseNet-121~\cite{huang2017} to detect pneumonia and other findings; DenseNet's dense connectivity and moderate parameter count make it a common backbone for chest radiographs, and it motivates our choice of main model.
+
+Zech et al.~\cite{zech2018} showed that pneumonia classifiers can exploit hospital-specific signals and generalise poorly to other sites, which is why we treat partition leakage and single-site data as first-order concerns rather than footnotes. Grad-CAM~\cite{selvaraju2017} is the standard tool for visualising which image regions drive a CNN's prediction; we use it as a qualitative check, not as evidence of localisation.
+
+\TBD{Member 3: add 1--2 recent papers on this dataset and state precisely how our protocol differs.} Our work differs from most prior use of this dataset in that model selection, early stopping and threshold choice use only a patient-grouped validation split, and the test split is scored once, after the model and threshold are frozen.
+
+% ---------------------------------------------------------------------
+% METHOD -- owners: Member 2 (preprocessing, baseline), Member 3 (main model, training)
+% ---------------------------------------------------------------------
+\section{Method}
+\label{sec:method}
+
+\subsection{Problem formulation}
+Each input is a single chest radiograph $x$ with label $y\in\{0,1\}$ (0 = normal, 1 = pneumonia). A model $f_\theta$ outputs one logit $z=f_\theta(x)$ and a pneumonia probability $p=\sigma(z)$. Because 73\% of the training images show pneumonia, we train with a class-weighted binary cross-entropy,
+\begin{equation}
+\mathcal{L}(\theta) = -\frac{1}{N}\sum_{i=1}^{N}\Bigl[w\,y_i\log p_i + (1-y_i)\log(1-p_i)\Bigr],\label{eq:loss}
+\end{equation}
+where the positive-class weight $w=N_0/N_1=1{,}109/2{,}993\approx0.371$ is computed from the training-split counts of normal ($N_0$) and pneumonia ($N_1$) images only, so both classes contribute equally to the loss. A prediction is pneumonia when $p\geq\tau$; the threshold $\tau$ is selected on validation data (Section~\ref{sec:threshold}).
+
+\subsection{Preprocessing}
+Images are resized to $224\times224$ with the aspect ratio preserved and the short side zero-padded, so anatomy is never stretched. The single grayscale channel is replicated to three channels for compatibility with ImageNet weights. The baseline is normalised with statistics computed on the training split; DenseNet-121 uses ImageNet statistics. Training-time augmentation is deliberately mild: rotation up to $\pm5^\circ$, translation up to 3\% and, with probability 0.2, brightness and contrast jitter of up to 15\%. Horizontal flips are disabled because they produce anatomically implausible images (the heart appears on the right). Validation and test images are not augmented.
+
+\subsection{Baseline: custom CNN}
+The baseline is a small CNN trained from scratch: four blocks of $3\times3$ convolution, batch normalisation, ReLU and $2\times2$ max pooling with 32, 64, 128 and 256 channels, followed by global average pooling and a classifier of dropout (0.3), a 64-unit hidden layer and one output logit. It has 405,409 parameters. Its role is to be a fair floor that the pretrained model must beat, trained with the same data, loss and evaluation code.
+
+\subsection{Main model: pretrained DenseNet-121}
+We replace the classifier of an ImageNet-pretrained DenseNet-121~\cite{huang2017,deng2009} (torchvision \texttt{IMAGENET1K\_V1}) with dropout (0.2) and a single-logit linear layer, giving 6,954,881 parameters in total. We compare two fine-tuning depths. In the head-only setting only the new classifier is trained (1,025 parameters). In the last-block setting, used for the main run, the final dense block and final normalisation layer are also trained (2,161,153 parameters). Frozen layers are kept in evaluation mode so their batch-normalisation statistics do not drift towards the small training set.
+
+\subsection{Training details}
+All models are trained with AdamW~\cite{loshchilov2019} (weight decay $10^{-4}$) and automatic mixed precision. The learning rate is halved by ReduceLROnPlateau when validation macro F1 does not improve for two epochs, and training stops early when it has not improved for four (DenseNet) or five (baseline) epochs. The checkpoint with the best validation macro F1 is kept. Table~\ref{tab:hparams} lists the remaining settings. Seeds are fixed to 42 and cuDNN is run in deterministic mode. Checkpoints store the optimiser, scheduler, AMP scaler, early-stopping state and random-number state, so an interrupted run resumes to identical weights.
+
+\begin{table}[t]
+\caption{Training configuration}
+\label{tab:hparams}
+\centering
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Setting & Custom CNN & DenseNet-121 \\
+\midrule
+Initialisation & random & ImageNet \\
+Trainable params & 405,409 & 2,161,153 \\
+Learning rate & $10^{-3}$ & $10^{-4}$ \\
+Batch size & 32 & 16 \\
+Max epochs & 20 & 15 \\
+Early-stop patience & 5 & 4 \\
+Gradient clipping & -- & 5.0 \\
+Normalisation & train statistics & ImageNet \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------
+% EXPERIMENTAL SETUP -- owners: Member 1 (data, split), Member 4 (protocol, metrics)
+% ---------------------------------------------------------------------
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Dataset and licence}
+We use the chest X-ray subset of the Kermany dataset~\cite{kermany-data} (Mendeley Data v3, CC BY 4.0), obtained through the Kaggle mirror \texttt{paultimothymooney/chest-xray-pneumonia} (version 2). It contains 5,856 anterior-posterior radiographs of children aged about one to five years from Guangzhou Women and Children's Medical Center: 1,583 normal and 4,273 pneumonia images, of which 2,780 are labelled bacterial and 1,493 viral in the filenames. The subtype is kept as audit metadata for error analysis only; it is never a training target. The images are de-identified and publicly released.
+
+\subsection{Audit and leakage-aware split}
+The audit derives a patient key from each filename (pneumonia counters are interpreted separately within the bacterial and viral namespaces), computes exact SHA-256 hashes, and links perceptual near-duplicates. Images whose filename cannot be parsed fall back to their duplicate group. Because overlap was found between the provided partitions, all images are pooled and re-split by group into 70/15/15 train/validation/test with seed 42 (Table~\ref{tab:split}). The split is committed as manifests and reused unchanged by every experiment; training code never reads the test manifest. No filename patient key crossed the provided folders, but five duplicate groups (22 images, 8 of them in the provided test folder) linked the provided training and test folders through exact or near-duplicate images. Overall the audit found no corrupt files, 30 exact-duplicate groups and 44 near-duplicate pairs.
+
+\begin{table}[t]
+\caption{Split \texttt{split\_v1} (images)}
+\label{tab:split}
+\centering
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Split & Normal & Bacterial & Viral & Total \\
+\midrule
+Train & 1,109 & 1,953 & 1,040 & 4,102 \\
+Validation & 237 & 407 & 233 & 877 \\
+Test & 237 & 420 & 220 & 877 \\
+\midrule
+Total & 1,583 & 2,780 & 1,493 & 5,856 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Metrics}
+The primary metric is macro F1, the unweighted mean of the per-class F1 scores. We use it instead of accuracy because a model that always predicts pneumonia would score 73\% accuracy on this data. The clinical metric is pneumonia sensitivity, since a missed pneumonia is the costlier error. We also report specificity, ROC-AUC, PR-AUC and the full confusion matrix. All metrics are computed by one shared evaluation module, so both models are scored by identical code.
+
+\subsection{Threshold selection and test discipline}
+\label{sec:threshold}
+The operating threshold is chosen on validation predictions only. Every distinct predicted probability is a candidate; we pick the one with the highest macro F1, breaking ties by higher sensitivity and then by the lower threshold. The chosen model, run and threshold are written to a frozen file, and the test evaluation script refuses to run without it. The test set was evaluated exactly once, on \TBD{date}.
+
+\subsection{Compute}
+Training ran on a 3g.20gb MIG slice of an NVIDIA A100-SXM4-40GB on the shared course workstation (Python 3.12, PyTorch 2.6.0, CUDA 12.4). Peak GPU memory was 0.15\,GB for DenseNet-121 and 0.65\,GB for the baseline, and the training epochs of the two main runs took 3.9 and 7.2 minutes (about 0.2 GPU-hours in total), well within the 2-day, 10--12\,GB team allocation.
+
+% ---------------------------------------------------------------------
+% RESULTS -- owner: Member 4 (validation, ablation, error analysis), Member 5 (test)
+% ---------------------------------------------------------------------
+\section{Results}
+\label{sec:results}
+
+\subsection{Model comparison on validation}
+Table~\ref{tab:results} compares the two models at their validation-selected thresholds, and Fig.~\ref{fig:rocpr} shows their ROC and precision-recall curves. DenseNet-121 improves macro F1 by 1.5 points and specificity by 5.5 points, cutting false alarms on the 237 normal images from 21 to 8, while missing three more of the 640 pneumonia images (17 versus 14). Both models rank images well (ROC-AUC 0.995 and 0.987), so the gap comes mainly from how well each separates the normal class near the threshold.
+
+Fig.~\ref{fig:curves} shows the training dynamics. DenseNet-121 reaches a validation macro F1 of 0.955 after the first epoch and then plateaus; its validation loss stops improving after epoch 5 while the training loss keeps falling, and early stopping ends the run at epoch 9, keeping epoch 5. The baseline trained from scratch is unstable in its first ten epochs (validation macro F1 drops to 0.48 at epoch 4) before settling with training and validation loss close together, and it is still improving at its final epoch, so a longer schedule might narrow the gap.
+
+\begin{table}[t]
+\caption{Validation results at the validation-selected threshold ($n=877$)}
+\label{tab:results}
+\centering
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Model & $\tau$ & Macro F1 & Sens. & Spec. & ROC-AUC & PR-AUC \\
+\midrule
+Custom CNN & 0.529 & 0.949 & \textbf{0.978} & 0.911 & 0.987 & 0.995 \\
+DenseNet-121 & 0.502 & \textbf{0.964} & 0.973 & \textbf{0.966} & \textbf{0.995} & \textbf{0.998} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\figslot{figures/roc_validation.png}{0.38\columnwidth}\\[2pt]
+\figslot{figures/pr_validation.png}{0.38\columnwidth}
+\caption{Validation ROC (top) and precision-recall (bottom) curves of both models. The dashed line in the PR plot is the no-skill prevalence.}
+\label{fig:rocpr}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\figslot{figures/training_curves.png}{0.5\columnwidth}
+\caption{Training (dashed) and validation (solid) loss, and validation macro F1 at threshold 0.5, per epoch. Circles mark the saved best epoch.}
+\label{fig:curves}
+\end{figure}
+
+\subsection{Ablation}
+Table~\ref{tab:ablation} isolates the effect of fine-tuning depth and learning rate on DenseNet-121, holding data, seed and all other settings fixed. \TBD{Member 4: interpretation.}
+
+\begin{table}[t]
+\caption{DenseNet-121 ablation on validation}
+\label{tab:ablation}
+\centering
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Variant & Trainable & LR & Macro F1 & Sens. \\
+\midrule
+Head only & 1,025 & $3\times10^{-4}$ & \tbd & \tbd \\
+Last block (main) & 2.16M & $10^{-4}$ & \tbd & \tbd \\
+Last block & 2.16M & $2\times10^{-4}$ & \tbd & \tbd \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Threshold choice}
+Fig.~\ref{fig:sweep} shows macro F1, sensitivity and specificity of the selected model as the threshold varies, with the frozen threshold $\tau=0.502$ marked. Macro F1 stays close to its maximum over a wide range of thresholds (roughly 0.3--0.7), so the operating point is not fragile.
+
+\begin{figure}[t]
+\centering
+\figslot{figures/threshold_sweep_densenet121.png}{0.5\columnwidth}
+\caption{Validation threshold sweep for the selected model.}
+\label{fig:sweep}
+\end{figure}
+
+\subsection{Locked test result}
+Table~\ref{tab:test} reports the single test evaluation of the frozen model and threshold; Fig.~\ref{fig:cm} shows its confusion matrix. \TBD{Member 5: compare with the validation numbers and comment on the gap.}
+
+\begin{table}[t]
+\caption{Locked test result of the frozen model ($n=877$)}
+\label{tab:test}
+\centering
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Model & Macro F1 & Sens. & Spec. & ROC-AUC & PR-AUC \\
+\midrule
+DenseNet-121 ($\tau=0.502$) & \tbd & \tbd & \tbd & \tbd & \tbd \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\figslot{figures/confusion_matrix_densenet121_test.png}{0.55\columnwidth}
+\caption{Test confusion matrix of the frozen model (counts and row percentages).}
+\label{fig:cm}
+\end{figure}
+
+\subsection{Error analysis}
+Table~\ref{tab:subtype} breaks the selected model's validation errors down by the filename subtype. Viral pneumonia is missed about three times as often as bacterial pneumonia (11 of 233 versus 6 of 407 images), consistent with viral pneumonia often producing subtler radiographic findings, and 8 of 237 normal images are flagged as pneumonia. The most confident false negative has a predicted probability of only 0.005, so some missed cases look confidently normal to the model. Fig.~\ref{fig:gradcam} shows Grad-CAM maps for correct and incorrect predictions. These maps show where the network's activations are, not where the pathology is, and are included only as a qualitative sanity check.
+
+\begin{table}[t]
+\caption{Validation error rates by subtype (DenseNet-121, $\tau=0.502$)}
+\label{tab:subtype}
+\centering
+\begin{tabular}{@{}lrcc@{}}
+\toprule
+Subtype & Images & False-negative rate & False-positive rate \\
+\midrule
+Normal & 237 & -- & 3.4\% (8) \\
+Bacterial & 407 & 1.5\% (6) & -- \\
+Viral & 233 & 4.7\% (11) & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\figslot{figures/gradcam_examples.png}{0.5\columnwidth}
+\caption{Grad-CAM examples: correct pneumonia, correct normal and confident errors. Publishing these images is recorded in the team decision log.}
+\label{fig:gradcam}
+\end{figure}
+
+% ---------------------------------------------------------------------
+% DISCUSSION & LIMITATIONS -- owner: Member 5
+% ---------------------------------------------------------------------
+\section{Discussion \& Limitations}
+\label{sec:discussion}
+On validation, at the frozen threshold the selected model misses about 3 of every 100 pneumonia images (sensitivity 97.3\%) and flags about 3 of every 100 normal children (specificity 96.6\%). The baseline misses slightly fewer pneumonia images (2.2 per 100) but flags almost 9 of every 100 normal children, so the pretrained model trades a small loss in sensitivity for far fewer false alarms. Because its errors concentrate in viral pneumonia and some misses are made with high confidence, the model is suited to prioritising a reading queue, not to ruling out pneumonia. \TBD{Member 5: restate with the locked-test numbers once the test set has been evaluated.}
+
+Four limitations bound these conclusions. First, patient identities are inferred from filenames and combined with hash and near-duplicate links; these are grouping heuristics, not verified clinical identifiers, so some identity overlap may remain undetected. Second, we report one split and one seed, so the results carry no confidence interval and differences of a few tenths of a macro-F1 point should not be read as a ranking. Third, all images come from one pediatric centre in Guangzhou; given the site effects reported by Zech et al.~\cite{zech2018}, nothing here transfers to adults or other hospitals without external validation. Fourth, Grad-CAM is a qualitative check and is not evidence that the model attends to the pathology.
+
+\subsection{Deployment note}
+The frozen DenseNet-121 has 6.95M parameters and 26.9\,MB of fp32 weights (baseline: 0.41M parameters, 1.6\,MB). On a laptop CPU (Intel Core i5-13420H, 8 threads), single-image inference takes a median of 147\,ms for DenseNet-121 and 13\,ms for the baseline (100 timed runs), with a peak process memory of 338\,MB including the Python runtime; on the A100 it takes \tbd{}\,ms. A radiograph is classified at the frozen threshold with:
+\begin{footnotesize}
+\begin{verbatim}
+python run_all.py infer \
+  --checkpoint <run>/checkpoints/best.pt \
+  --threshold-file frozen_threshold.json \
+  --image xray.jpeg
+\end{verbatim}
+\end{footnotesize}
+The system is an academic prototype and is not validated for clinical use.
+
+\subsection{Reproducibility}
+The repository declares tested dependency ranges in \texttt{requirements.txt}, and the exact server environment (Python 3.12.3, PyTorch 2.6.0, CUDA 12.4) was recorded with \texttt{scripts/audit\_environment.py}. Seeds are fixed, and the commit, configuration, split version, device and peak memory of every run are recorded in an experiment registry. 172 automated tests cover the data contract, checkpoint resume, evaluation, inference and a clean-clone release check. Both training runs and the validation freeze are reproduced from a clean checkout by:
+\begin{footnotesize}
+\begin{verbatim}
+python run_all.py develop \
+  --run-ids baseline_s42 densenet121_s42
+\end{verbatim}
+\end{footnotesize}
+
+% ---------------------------------------------------------------------
+% CONCLUSION -- owner: Member 5
+% ---------------------------------------------------------------------
+\section{Conclusion}
+\label{sec:conclusion}
+We compared a custom CNN with a pretrained DenseNet-121 for pediatric pneumonia detection under a patient-grouped split, validation-only model and threshold selection, and a single locked test evaluation. On validation, DenseNet-121 reached a macro F1 of 0.964 against 0.949 for the 0.4M-parameter baseline, mainly by raising specificity from 91.1\% to 96.6\%; \TBD{locked-test macro F1 and sensitivity in one sentence}. Viral pneumonia was missed about three times as often as bacterial pneumonia (4.7\% versus 1.5\%). Future work should validate the frozen model on radiographs from other hospitals and report confidence intervals over several seeds.
+
+% ---------------------------------------------------------------------
+% TOOLS & ACKNOWLEDGEMENTS -- owner: Member 5; every member confirms
+% ---------------------------------------------------------------------
+\section*{Tools \& Acknowledgements}
+We used Claude Code (Anthropic) to draft the structure of this report and the slide deck. \TBD{list every other AI tool the team used and what for}. All experiments, analyses and the final text were reviewed and validated by the authors. We thank Kermany et al.\ for releasing the dataset under CC BY 4.0, and the AI Academy for access to the shared GPU workstation.
+
+\begin{thebibliography}{10}\itemsep-1pt
+
+\bibitem{who-pneumonia}
+World Health Organization, ``Pneumonia in children,'' fact sheet. [Online]. Available: \url{https://www.who.int/news-room/fact-sheets/detail/pneumonia}
+
+\bibitem{kermany2018}
+D. S. Kermany et al., ``Identifying medical diagnoses and treatable diseases by image-based deep learning,'' \emph{Cell}, vol.~172, no.~5, pp.~1122--1131, 2018.
+
+\bibitem{kermany-data}
+D. Kermany, K. Zhang, and M. Goldbaum, ``Large dataset of labeled optical coherence tomography (OCT) and chest X-ray images,'' Mendeley Data, v3, 2018, doi: 10.17632/rscbjbr9sj.3.
+
+\bibitem{wang2017}
+X. Wang, Y. Peng, L. Lu, Z. Lu, M. Bagheri, and R. M. Summers, ``ChestX-ray8: Hospital-scale chest X-ray database and benchmarks on weakly-supervised classification and localization of common thorax diseases,'' in \emph{Proc.\ IEEE CVPR}, 2017, pp.~2097--2106.
+
+\bibitem{rajpurkar2017}
+P. Rajpurkar et al., ``CheXNet: Radiologist-level pneumonia detection on chest X-rays with deep learning,'' arXiv:1711.05225, 2017.
+
+\bibitem{huang2017}
+G. Huang, Z. Liu, L. van der Maaten, and K. Q. Weinberger, ``Densely connected convolutional networks,'' in \emph{Proc.\ IEEE CVPR}, 2017, pp.~4700--4708.
+
+\bibitem{zech2018}
+J. R. Zech, M. A. Badgeley, M. Liu, A. B. Costa, J. J. Titano, and E. K. Oermann, ``Variable generalization performance of a deep learning model to detect pneumonia in chest radiographs: A cross-sectional study,'' \emph{PLoS Med.}, vol.~15, no.~11, e1002683, 2018.
+
+\bibitem{selvaraju2017}
+R. R. Selvaraju, M. Cogswell, A. Das, R. Vedantam, D. Parikh, and D. Batra, ``Grad-CAM: Visual explanations from deep networks via gradient-based localization,'' in \emph{Proc.\ IEEE ICCV}, 2017, pp.~618--626.
+
+\bibitem{deng2009}
+J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei, ``ImageNet: A large-scale hierarchical image database,'' in \emph{Proc.\ IEEE CVPR}, 2009, pp.~248--255.
+
+\bibitem{loshchilov2019}
+I. Loshchilov and F. Hutter, ``Decoupled weight decay regularization,'' in \emph{Proc.\ ICLR}, 2019.
+
+\end{thebibliography}
+
+\end{document}
