@@ -47,7 +47,7 @@ from src.training.reproducibility import (
 )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train a configured binary classifier on split_v1.")
     p.add_argument("--config", required=True, help="YAML config path")
     p.add_argument("--resume", default=None, help="Path to last.pt to resume")
@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Append the completed run to docs/experiment_registry.csv",
     )
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def git_sha() -> str:
@@ -193,8 +193,8 @@ def write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: Optional[list] = None) -> int:
+    args = parse_args(argv)
     cfg = load_config(args.config)
     seed_everything(cfg["seed"], deterministic=cfg["training"].get("deterministic", True))
     device = resolve_device(args.device or cfg["training"].get("device", "auto"))
